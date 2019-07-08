@@ -1,0 +1,18 @@
+[package]
+name = "4chan-downloader"
+description = "CLI to download all images/webms of a 4chan thread"
+version = "0.1.0"
+authors = ["Mariot Tsitoara <mariot.tsitoara@gmail.com>"]
+edition = "2018"
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/mariot/4chan-downloader"
+repository = "https://github.com/mariot/4chan-downloader"
+keywords = ["cli", "4chan", "download", "downloader", "crawler"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+clap = {version = "2.32", features = ["yaml"]}
+regex = "1.1.2"
+reqwest = "0.9.12"
+tempdir = "0.3.7"

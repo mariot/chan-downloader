@@ -1,0 +1,12 @@
+name: 4chan-downloader
+version: "0.1.0"
+author: "Mariot Tsitoara <mariot.tsitoara@gmail.com>"
+about: CLI to download all images/webms of a 4chan thread
+args:
+    - thread:
+        short: t
+        required: true
+        long: thread
+        value_name: thread
+        help: URL of the thread
+        takes_value: true
