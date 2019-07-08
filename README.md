@@ -1,11 +1,11 @@
-4chan-downloader
-================
+chan-downloader
+===============
 
 CLI to download all images/webms of a 4chan thread
 
 ```
 USAGE:
-    4chan-downloader --thread <thread>
+    chan-downloader --thread <thread>
 
 FLAGS:
     -h, --help       Prints help information
