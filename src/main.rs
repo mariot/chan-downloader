@@ -14,7 +14,6 @@ use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::copy;
 
-
 fn main() {
     let yaml = load_yaml!("cli.yml");
     let matches = App::from_yaml(yaml).get_matches();
@@ -40,7 +39,7 @@ fn save_image(url: &str, name: &str, client: &Client) -> Result<(String), String
             };
             copy(&mut response, &mut dest).unwrap();
             name
-        },
+        }
         StatusCode::NOT_FOUND => {
             return Err(String::from("File not found"));
         }
@@ -51,7 +50,8 @@ fn save_image(url: &str, name: &str, client: &Client) -> Result<(String), String
 
 fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
     let workpath = env::current_dir().unwrap();
-    let re = Regex::new(r"(//i(?:s)?\d*\.(?:4cdn|4chan)\.org/\w+/(\d+\.(?:jpg|png|gif|webm)))").unwrap();
+    let re =
+        Regex::new(r"(//i(?:s)?\d*\.(?:4cdn|4chan)\.org/\w+/(\d+\.(?:jpg|png|gif|webm)))").unwrap();
 
     let url_vec: Vec<&str> = thread_link.split('/').collect();
     let board = url_vec[3];
@@ -73,17 +73,24 @@ fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
     if !directory.exists() {
         match create_dir_all(&directory) {
             Ok(_) => println!("Created new directory: {}", directory.display()),
-            Err(err) => eprintln!("Failed to create new directory: {}", err)
+            Err(err) => eprintln!("Failed to create new directory: {}", err),
         }
     } else {
         println!("Using existing directory: {}", directory.display())
     }
 
     let mut thread_page = load(thread_link, client);
-    for cap in re.captures_iter(thread_page.text().unwrap().as_str()).step_by(2) {
+    for cap in re
+        .captures_iter(thread_page.text().unwrap().as_str())
+        .step_by(2)
+    {
         let img_path = directory.join(&cap[2]);
         if !img_path.exists() {
-            match save_image(format!("{}{}", "https:", &cap[1]).as_str(), img_path.to_str().unwrap(), client) {
+            match save_image(
+                format!("{}{}", "https:", &cap[1]).as_str(),
+                img_path.to_str().unwrap(),
+                client,
+            ) {
                 Ok(name) => println!("New file: {}", name),
                 Err(err) => eprintln!("Error: {}", err),
             }
