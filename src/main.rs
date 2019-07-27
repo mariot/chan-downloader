@@ -1,10 +1,13 @@
 #[macro_use]
 extern crate clap;
+#[macro_use]
+extern crate lazy_static;
 extern crate regex;
 extern crate reqwest;
 extern crate tempdir;
 
 use clap::{App, ArgMatches};
+use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use reqwest::{Client, StatusCode};
 use tempdir::TempDir;
@@ -43,15 +46,19 @@ fn save_image(url: &str, name: &str, client: &Client) -> Result<(String), String
         StatusCode::NOT_FOUND => {
             return Err(String::from("File not found"));
         }
-        s => return Err(String::from(format!("Received response status: {:?}", s))),
+        s => return Err(format!("Received response status: {:?}", s)),
     };
     Ok(String::from(file_name))
 }
 
 fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
     let workpath = env::current_dir().unwrap();
-    let re =
-        Regex::new(r"(//i(?:s)?\d*\.(?:4cdn|4chan)\.org/\w+/(\d+\.(?:jpg|png|gif|webm)))").unwrap();
+
+    lazy_static! {
+        static ref RE: Regex =
+            Regex::new(r"(//i(?:s)?\d*\.(?:4cdn|4chan)\.org/\w+/(\d+\.(?:jpg|png|gif|webm)))")
+                .unwrap();
+    }
 
     let url_vec: Vec<&str> = thread_link.split('/').collect();
     let board = url_vec[3];
@@ -72,18 +79,23 @@ fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
     let directory = workpath.join("downloads").join(board).join(thread);
     if !directory.exists() {
         match create_dir_all(&directory) {
-            Ok(_) => println!("Created new directory: {}", directory.display()),
+            Ok(_) => {}
             Err(err) => eprintln!("Failed to create new directory: {}", err),
         }
-    } else {
-        println!("Using existing directory: {}", directory.display())
     }
 
     let mut thread_page = load(thread_link, client);
-    for cap in re
-        .captures_iter(thread_page.text().unwrap().as_str())
-        .step_by(2)
-    {
+    let page_string = thread_page.text().unwrap();
+    let links_iter = RE.captures_iter(page_string.as_str());
+
+    let number_of_links = RE.captures_iter(page_string.as_str()).count() / 2;
+    let pb = ProgressBar::new(number_of_links as u64);
+    pb.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg} ({eta})")
+        .progress_chars("#>-"));
+
+    pb.tick();
+    for cap in links_iter.step_by(2) {
         let img_path = directory.join(&cap[2]);
         if !img_path.exists() {
             match save_image(
@@ -91,9 +103,12 @@ fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
                 img_path.to_str().unwrap(),
                 client,
             ) {
-                Ok(name) => println!("New file: {}", name),
+                Ok(_) => {}
                 Err(err) => eprintln!("Error: {}", err),
             }
         }
+        pb.set_message(&cap[2].to_string());
+        pb.inc(1);
     }
+    pb.finish_with_message("Done");
 }
