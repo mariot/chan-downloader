@@ -35,10 +35,11 @@ fn download_thread(thread_link: &str, output: &str) -> Result<String, Error> {
     }
 
     let page_string = match get_page_content(thread_link, &client) {
-        Ok(page_string) => {
-            page_string
-        }
-        Err(err) => eprintln!("Error: {}", err),
+        Ok(page_string) => page_string,
+        Err(err) => {
+            eprintln!("Error: {}", err);
+            String::from("")
+        },
     };
     let (links_iter, number_of_links) = get_image_links(page_string.as_str());
     let pb = ProgressBar::new(number_of_links as u64);
