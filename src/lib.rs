@@ -1,11 +1,8 @@
 #[macro_use]
-extern crate clap;
-#[macro_use]
 extern crate lazy_static;
 extern crate regex;
 extern crate reqwest;
 
-use clap::{App, ArgMatches};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use reqwest::{Client, Error};
@@ -14,15 +11,6 @@ use std::env;
 use std::fs::create_dir_all;
 use std::fs::File;
 use std::io::copy;
-
-fn main() {
-    let yaml = load_yaml!("cli.yml");
-    let matches = App::from_yaml(yaml).get_matches();
-
-    let thread = matches.value_of("thread").unwrap();
-    let client = Client::new();
-    download_thread(thread, &matches, &client);
-}
 
 fn load(url: &str, client: &Client) -> Result<String, Error> {
     let mut response = client.get(url).send()?;
@@ -39,7 +27,8 @@ fn save_image(url: &str, name: &str, client: &Client) -> Result<String, Error> {
     Ok(String::from(name))
 }
 
-fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
+pub fn download_thread(thread_link: &str, output: &str) {
+    let client = Client::new();
     let workpath = env::current_dir().unwrap();
 
     lazy_static! {
@@ -57,14 +46,14 @@ fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
         let thread_tmp_vec: Vec<&str> = url_vec[6].split('#').collect();
         let thread_tmp = thread_tmp_vec[0];
 
-        let path = workpath.join("downloads").join(board).join(thread_tmp);
+        let path = workpath.join(output).join(board).join(thread_tmp);
 
-        if matches.is_present("names") || path.exists() {
+        if path.exists() {
             thread = thread_tmp;
         }
     }
 
-    let directory = workpath.join("downloads").join(board).join(thread);
+    let directory = workpath.join(output).join(board).join(thread);
     if !directory.exists() {
         match create_dir_all(&directory) {
             Ok(_) => {}
@@ -72,7 +61,7 @@ fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
         }
     }
 
-    match load(thread_link, client) {
+    match load(thread_link, &client) {
         Ok(page_string) => {
             let links_iter = RE.captures_iter(page_string.as_str());
             let number_of_links = RE.captures_iter(page_string.as_str()).count() / 2;
@@ -88,7 +77,7 @@ fn download_thread(thread_link: &str, matches: &ArgMatches, client: &Client) {
                     match save_image(
                         format!("{}{}", "https:", &cap[1]).as_str(),
                         img_path.to_str().unwrap(),
-                        client,
+                        &client,
                     ) {
                         Ok(_) => {}
                         Err(err) => eprintln!("Error: {}", err),

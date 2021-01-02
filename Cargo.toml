@@ -11,6 +11,14 @@ repository = "https://github.com/mariot/chan-downloader"
 keywords = ["cli", "4chan", "download", "downloader", "crawler"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "chandownloader"
+path = "src/lib.rs"
+
+[[bin]]
+name = "chan-downloader"
+path = "src/bin.rs"
+
 [dependencies]
 clap = {version = "2.33.3", features = ["yaml"]}
 indicatif = "0.15.0"

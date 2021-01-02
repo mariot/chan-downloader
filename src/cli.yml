@@ -10,3 +10,9 @@ args:
         value_name: thread
         help: URL of the thread
         takes_value: true
+    - output:
+        short: o
+        long: output
+        value_name: output
+        help: Output directory (Default is 'downloads')
+        takes_value: true
