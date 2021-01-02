@@ -4,13 +4,11 @@ extern crate clap;
 extern crate lazy_static;
 extern crate regex;
 extern crate reqwest;
-extern crate tempdir;
 
 use clap::{App, ArgMatches};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use reqwest::{Client, StatusCode};
-use tempdir::TempDir;
 
 use std::env;
 use std::fs::create_dir_all;
@@ -31,15 +29,11 @@ fn load(url: &str, client: &Client) -> reqwest::Response {
 }
 
 fn save_image(url: &str, name: &str, client: &Client) -> Result<String, String> {
-    let tmp_dir = TempDir::new("inb4404_temp");
     let mut response = client.get(url).send().unwrap();
 
     let file_name = match response.status() {
         StatusCode::OK => {
-            let mut dest = {
-                tmp_dir.unwrap().path().join(name);
-                File::create(name).unwrap()
-            };
+            let mut dest = File::create(name).unwrap();
             copy(&mut response, &mut dest).unwrap();
             name
         }
