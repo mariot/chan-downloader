@@ -12,7 +12,7 @@ keywords = ["cli", "4chan", "download", "downloader", "crawler"]
 categories = ["command-line-utilities"]
 
 [lib]
-name = "chandownloader"
+name = "chan_downloader"
 path = "src/lib.rs"
 
 [[bin]]
