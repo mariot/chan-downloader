@@ -6,7 +6,8 @@ use std::fs::create_dir_all;
 
 use clap::App;
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::Client;
+use reqwest::Error;
+use reqwest::blocking::Client;
 
 use chan_downloader::{get_image_links, get_page_content, get_thread_infos, save_image};
 
@@ -16,11 +17,11 @@ fn main() {
 
     let thread = matches.value_of("thread").unwrap();
     let output = matches.value_of("output").unwrap_or("downloads");
-    download_thread(thread, &output);
+    download_thread(thread, &output).unwrap();
 }
 
-fn download_thread(thread_link: &str, output: &str) {
-    let client = Client::new();
+fn download_thread(thread_link: &str, output: &str) -> Result<(), Error> {
+    let client = Client::builder().user_agent("reqwest").build()?;
     let workpath = env::current_dir().unwrap();
 
     let (board_name, thread_id) = get_thread_infos(thread_link);
@@ -60,4 +61,5 @@ fn download_thread(thread_link: &str, output: &str) {
         }
         Err(err) => eprintln!("Error: {}", err),
     }
+    Ok(())
 }

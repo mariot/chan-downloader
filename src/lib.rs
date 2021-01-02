@@ -12,7 +12,8 @@ use std::fs::File;
 use std::io::copy;
 
 use regex::{CaptureMatches, Regex};
-use reqwest::{Client, Error};
+use reqwest::Error;
+use reqwest::blocking::{Client};
 
 /// Saves the image from the url to the given path.
 /// Returns the path on success
@@ -20,10 +21,10 @@ use reqwest::{Client, Error};
 /// # Examples
 ///
 /// ```
-/// use reqwest::Client;
+/// use reqwest::blocking::Client;
 /// use std::env;
 /// use std::fs::remove_file;
-/// let client = Client::new();
+/// let client = Client::builder().user_agent("reqwest").build().unwrap();
 /// let workpath = env::current_dir().unwrap().join("1489266570954.jpg");
 /// let url = "https://i.4cdn.org/wg/1489266570954.jpg";
 /// let answer = chan_downloader::save_image(url, workpath.to_str().unwrap(), &client).unwrap();
@@ -32,11 +33,12 @@ use reqwest::{Client, Error};
 /// remove_file(answer).unwrap();
 /// ```
 pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Error> {
-    let mut response = client.get(url).send()?;
+    let response = client.get(url).send()?;
 
     if response.status().is_success() {
         let mut dest = File::create(path).unwrap();
-        copy(&mut response, &mut dest).unwrap();
+        let content =  response.text()?;
+        copy(&mut content.as_bytes(), &mut dest).unwrap();
     }
     Ok(String::from(path))
 }
@@ -46,8 +48,8 @@ pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Erro
 /// # Examples
 ///
 /// ```
-/// use reqwest::Client;
-/// let client = Client::new();
+/// use reqwest::blocking::Client;
+/// let client = Client::builder().user_agent("reqwest").build().unwrap();
 /// let url = "https://boards.4chan.org/wg/thread/6872254";
 /// match chan_downloader::get_page_content(url, &client) {
 ///     Ok(page) => println!("Content: {}", page),
@@ -55,8 +57,9 @@ pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Erro
 /// }
 /// ```
 pub fn get_page_content(url: &str, client: &Client) -> Result<String, Error> {
-    let mut response = client.get(url).send()?;
-    Ok(response.text().unwrap())
+    let response = client.get(url).send()?;
+    let content =  response.text()?;
+    Ok(content)
 }
 
 /// Returns the board name and thread id.
@@ -84,8 +87,8 @@ pub fn get_thread_infos(url: &str) -> (&str, &str) {
 /// # Examples
 ///
 /// ```
-/// use reqwest::Client;
-/// let client = Client::new();
+/// use reqwest::blocking::Client;
+/// let client = Client::builder().user_agent("reqwest").build().unwrap();
 /// let url = "https://boards.4chan.org/wg/thread/6872254";
 /// match chan_downloader::get_page_content(url, &client) {
 ///     Ok(page_string) => {
@@ -141,19 +144,20 @@ mod tests {
 
     #[test]
     fn it_gets_page_content() {
-        use reqwest::Client;
-        let client = Client::new();
+        use reqwest::blocking::Client;
+        let client = Client::builder().user_agent("reqwest").build().unwrap();
         let url = "https://raw.githubusercontent.com/mariot/chan-downloader/master/.gitignore";
         let result = get_page_content(url, &client).unwrap();
         assert_eq!(result, "/target/\nCargo.lock\n**/*.rs.bk\n");
+        assert_eq!(4, 2+2);
     }
 
     #[test]
     fn it_saves_image() {
-        use reqwest::Client;
+        use reqwest::blocking::Client;
         use std::env;
         use std::fs::remove_file;
-        let client = Client::new();
+        let client = Client::builder().user_agent("reqwest").build().unwrap();
         let workpath = env::current_dir().unwrap().join("1489266570954.jpg");
         let url = "https://i.4cdn.org/wg/1489266570954.jpg";
         let answer = save_image(url, workpath.to_str().unwrap(), &client).unwrap();
