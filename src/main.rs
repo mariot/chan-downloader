@@ -30,7 +30,7 @@ fn load(url: &str, client: &Client) -> reqwest::Response {
     client.get(url).send().unwrap()
 }
 
-fn save_image(url: &str, name: &str, client: &Client) -> Result<(String), String> {
+fn save_image(url: &str, name: &str, client: &Client) -> Result<String, String> {
     let tmp_dir = TempDir::new("inb4404_temp");
     let mut response = client.get(url).send().unwrap();
 
