@@ -11,6 +11,7 @@ extern crate reqwest;
 use std::fs::File;
 use std::io::copy;
 
+use log::info;
 use regex::{CaptureMatches, Regex};
 use reqwest::Error;
 use reqwest::blocking::{Client};
@@ -33,6 +34,7 @@ use reqwest::blocking::{Client};
 /// remove_file(answer).unwrap();
 /// ```
 pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Error> {
+    info!(target: "image_events", "Saving image to: {}", path);
     let response = client.get(url).send()?;
 
     if response.status().is_success() {
@@ -40,6 +42,7 @@ pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Erro
         let content =  response.text()?;
         copy(&mut content.as_bytes(), &mut dest).unwrap();
     }
+    info!("Saved image to: {}", path);
     Ok(String::from(path))
 }
 
@@ -57,8 +60,10 @@ pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Erro
 /// }
 /// ```
 pub fn get_page_content(url: &str, client: &Client) -> Result<String, Error> {
+    info!(target: "page_events", "Loading page: {}", url);
     let response = client.get(url).send()?;
     let content =  response.text()?;
+    info!("Loaded page: {}", url);
     Ok(content)
 }
 
@@ -74,10 +79,12 @@ pub fn get_page_content(url: &str, client: &Client) -> Result<String, Error> {
 /// assert_eq!(thread_id, "6872254");
 /// ```
 pub fn get_thread_infos(url: &str) -> (&str, &str) {
+    info!(target: "thread_events", "Getting thread infos from: {}", url);
     let url_vec: Vec<&str> = url.split('/').collect();
     let board_name = url_vec[3];
     let thread_vec: Vec<&str> = url_vec[5].split('#').collect();
     let thread_id = thread_vec[0];
+    info!("Got thread infos from: {}", url);
     (board_name, thread_id)
 }
 
@@ -104,6 +111,7 @@ pub fn get_thread_infos(url: &str) -> (&str, &str) {
 /// }
 /// ```
 pub fn get_image_links(page_content: &str) -> (CaptureMatches, usize) {
+    info!(target: "link_events", "Getting image links");
     lazy_static! {
         static ref RE: Regex =
             Regex::new(r"(//i(?:s)?\d*\.(?:4cdn|4chan)\.org/\w+/(\d+\.(?:jpg|png|gif|webm)))")
@@ -112,6 +120,7 @@ pub fn get_image_links(page_content: &str) -> (CaptureMatches, usize) {
 
     let links_iter = RE.captures_iter(page_content);
     let number_of_links = RE.captures_iter(page_content).count() / 2;
+    info!("Got {} image links from page", number_of_links);
     (links_iter, number_of_links)
 }
 
