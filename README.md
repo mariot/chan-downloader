@@ -5,15 +5,18 @@ CLI to download all images/webms of a 4chan thread
 
 ```
 USAGE:
-    chan-downloader --thread <thread>
+    chan-downloader [FLAGS] [OPTIONS] --thread <thread>
 
 FLAGS:
     -h, --help       Prints help information
+    -r, --reload     Reload thread every t minutes to get new images
     -V, --version    Prints version information
 
 OPTIONS:
-    -o, --output <output>    Output directory (Default is 'downloads')
-    -t, --thread <thread>    URL of the thread
+    -i, --interval <interval>    Time between each reload (in minutes. Default is 5)
+    -l, --limit <limit>          Time limit for execution (in minutes. Default is 120)
+    -o, --output <output>        Output directory (Default is 'downloads')
+    -t, --thread <thread>        URL of the thread
 ```
 
 chan_downloader
