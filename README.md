@@ -1,7 +1,8 @@
 chan-downloader
 ===============
 
-CLI to download all images/webms of a 4chan thread
+CLI to download all images/webms of a 4chan thread.
+If you use the reload flag, previously saved image won't be redownloaded.
 
 ```
 USAGE:

@@ -26,31 +26,33 @@ fn main() {
     let interval: u64 = matches.value_of("interval").unwrap_or("5").parse().unwrap();
     let limit: u64 = matches.value_of("limit").unwrap_or("120").parse().unwrap();
 
-    let mut execution_number: u64 = 0;
-    let number_of_execution: u64 = if reload {limit / interval} else { 1 };
-
-    info!(target: "downloader_events", "Downloading images from {} to {}", thread, output);
+    info!("Downloading images from {} to {}", thread, output);
 
     let directory = create_directory(thread, &output);
 
-    let wait_time = Duration::from_millis(60000 * interval);
-    while execution_number != number_of_execution {
-        let start = Instant::now();
-        execution_number += 1;
-        explore_thread(thread, &directory);
+    let mut downloaded_files: Vec<String> = Vec::new();
+
+    let start = Instant::now();
+    let wait_time = Duration::from_secs(60 * interval);
+    let limit_time = if reload { Duration::from_secs(60 * limit) } else { Duration::from_secs(0) };
+    loop {
+        let load_start = Instant::now();
+        explore_thread(thread, &directory, &mut downloaded_files);
         let runtime = start.elapsed();
-        if let Some(remaining) = wait_time.checked_sub(runtime) {
-            info!(
-                "Schedule slice has time left over; sleeping for {:?}",
-                remaining
-            );
+        let load_runtime = load_start.elapsed();
+        if runtime > limit_time {
+            info!( "Runtime exceeded, exiting.");
+            break;
+        };
+        if let Some(remaining) = wait_time.checked_sub(load_runtime) {
+            info!( "Schedule slice has time left over; sleeping for {:?}", remaining);
             thread::sleep(remaining);
         }
-        info!(target: "downloader_events", "Downloader executed {} time{}", execution_number, if execution_number == 1 { "" } else {"s"} );
+        info!("Downloader executed one more time for {:?}", load_runtime);
     }
 }
 
-fn explore_thread(thread_link: &str, directory: &PathBuf) {
+fn explore_thread(thread_link: &str, directory: &PathBuf, downloaded_files: &mut Vec<String>) {
     let client = Client::builder().user_agent("reqwest").build().unwrap();
     let page_string = match get_page_content(thread_link, &client) {
         Ok(page_string) => {
@@ -73,15 +75,18 @@ fn explore_thread(thread_link: &str, directory: &PathBuf) {
 
     for cap in links_iter.step_by(2) {
         let img_path = directory.join(&cap[2]);
-        if !img_path.exists() {
-            let image_path = img_path.to_str().unwrap();
+        let image_path = img_path.to_str().unwrap();
+        if downloaded_files.contains(&String::from(image_path)) {
+            info!("Image {} previously downloaded. Skipped", img_path.display());
+        } else if !img_path.exists() {
             match save_image(
                 format!("https:{}", &cap[1]).as_str(),
                 image_path,
                 &client,
             ) {
                 Ok(path) => {
-                    info!("Saved image to {}", path);
+                    info!("Saved image to {}", &path);
+                    downloaded_files.push(path);
                 }
                 Err(err) => {
                     error!("Couldn't save image {}", image_path);
@@ -89,6 +94,7 @@ fn explore_thread(thread_link: &str, directory: &PathBuf) {
                 },
             }
         } else {
+            downloaded_files.push(String::from(image_path));
             info!("Image {} already exists. Skipped", img_path.display());
         }
         pb.set_message(&cap[2].to_string());
