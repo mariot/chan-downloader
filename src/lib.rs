@@ -9,7 +9,7 @@ extern crate regex;
 extern crate reqwest;
 
 use std::fs::File;
-use std::io::copy;
+use std::io::{copy, Cursor};
 
 use log::info;
 use regex::{CaptureMatches, Regex};
@@ -39,8 +39,8 @@ pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Erro
 
     if response.status().is_success() {
         let mut dest = File::create(path).unwrap();
-        let content =  response.text()?;
-        copy(&mut content.as_bytes(), &mut dest).unwrap();
+        let mut content =  Cursor::new(response.bytes().unwrap());
+        copy(&mut content, &mut dest).unwrap();
     }
     info!("Saved image to: {}", path);
     Ok(String::from(path))

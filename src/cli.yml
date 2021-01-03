@@ -1,5 +1,5 @@
 name: chan-downloader
-version: "0.1.6"
+version: "0.1.7"
 author: "Mariot Tsitoara <mariot.tsitoara@pm.me>"
 about: CLI to download all images/webms of a 4chan thread
 args:
