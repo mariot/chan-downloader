@@ -1,8 +1,12 @@
 chan-downloader
 ===============
+Clone of [4chan-downloader](https://github.com/Exceen/4chan-downloader/) written in Rust
 
 CLI to download all images/webms of a 4chan thread.
+
 If you use the reload flag, previously saved image won't be redownloaded.
+
+Best results obtained while using the option `-c 4` (4 concurrent downloads).
 
 ```
 USAGE:
@@ -14,10 +18,11 @@ FLAGS:
     -V, --version    Prints version information
 
 OPTIONS:
-    -i, --interval <interval>    Time between each reload (in minutes. Default is 5)
-    -l, --limit <limit>          Time limit for execution (in minutes. Default is 120)
-    -o, --output <output>        Output directory (Default is 'downloads')
-    -t, --thread <thread>        URL of the thread
+    -c, --concurrent <concurrent>    Number of concurrent requests (Default is 2)
+    -i, --interval <interval>        Time between each reload (in minutes. Default is 5)
+    -l, --limit <limit>              Time limit for execution (in minutes. Default is 120)
+    -o, --output <output>            Output directory (Default is 'downloads')
+    -t, --thread <thread>            URL of the thread
 ```
 
 chan_downloader

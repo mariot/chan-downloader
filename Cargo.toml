@@ -1,7 +1,7 @@
 [package]
 name = "chan-downloader"
 description = "CLI to download all images/webms of a 4chan thread"
-version = "0.1.8"
+version = "0.2.0"
 authors = ["Mariot Tsitoara <mariot.tsitoara@pm.me>"]
 edition = "2018"
 license = "MIT"
@@ -22,8 +22,10 @@ path = "src/bin.rs"
 [dependencies]
 clap = {version = "2.33.3", features = ["yaml"]}
 env_logger = "0.8.2"
+futures = "0.3"
 indicatif = "0.15.0"
 lazy_static = "1.4.0"
 log = "0.4.11"
 regex = "1.4.2"
 reqwest = { version = "0.10", features = ["blocking"] }
+tokio = { version = "0.2", features = ["full"] }

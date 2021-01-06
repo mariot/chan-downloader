@@ -1,5 +1,5 @@
 name: chan-downloader
-version: "0.1.8"
+version: "0.2.0"
 author: "Mariot Tsitoara <mariot.tsitoara@pm.me>"
 about: CLI to download all images/webms of a 4chan thread
 args:
@@ -31,4 +31,10 @@ args:
         long: limit
         value_name: limit
         help: Time limit for execution (in minutes. Default is 120)
+        takes_value: true
+    - concurrent:
+        short: c
+        long: concurrent
+        value_name: concurrent
+        help: Number of concurrent requests (Default is 2)
         takes_value: true

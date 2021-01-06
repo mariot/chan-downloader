@@ -12,9 +12,14 @@ use std::fs::File;
 use std::io::{copy, Cursor};
 
 use log::info;
-use regex::{CaptureMatches, Regex};
+use regex::Regex;
 use reqwest::Error;
-use reqwest::blocking::{Client};
+use reqwest::Client;
+
+pub struct Link {
+    pub url: String,
+    pub name: String,
+}
 
 /// Saves the image from the url to the given path.
 /// Returns the path on success
@@ -22,24 +27,25 @@ use reqwest::blocking::{Client};
 /// # Examples
 ///
 /// ```
-/// use reqwest::blocking::Client;
+/// use reqwest::Client;
 /// use std::env;
 /// use std::fs::remove_file;
 /// let client = Client::builder().user_agent("reqwest").build().unwrap();
 /// let workpath = env::current_dir().unwrap().join("1489266570954.jpg");
 /// let url = "https://i.4cdn.org/wg/1489266570954.jpg";
-/// let answer = chan_downloader::save_image(url, workpath.to_str().unwrap(), &client).unwrap();
-///
-/// assert_eq!(workpath.to_str().unwrap(), answer);
-/// remove_file(answer).unwrap();
+/// async {
+///     let answer = chan_downloader::save_image(url, workpath.to_str().unwrap(), &client).await.unwrap();
+///     assert_eq!(workpath.to_str().unwrap(), answer);
+///     remove_file(answer).unwrap();
+/// };
 /// ```
-pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Error> {
+pub async fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Error> {
     info!(target: "image_events", "Saving image to: {}", path);
-    let response = client.get(url).send()?;
+    let response = client.get(url).send().await?;
 
     if response.status().is_success() {
         let mut dest = File::create(path).unwrap();
-        let mut content =  Cursor::new(response.bytes().unwrap());
+        let mut content =  Cursor::new(response.bytes().await?);
         copy(&mut content, &mut dest).unwrap();
     }
     info!("Saved image to: {}", path);
@@ -51,18 +57,19 @@ pub fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Erro
 /// # Examples
 ///
 /// ```
-/// use reqwest::blocking::Client;
+/// use std::io;
+/// use reqwest::Client;
 /// let client = Client::builder().user_agent("reqwest").build().unwrap();
-/// let url = "https://boards.4chan.org/wg/thread/6872254";
-/// match chan_downloader::get_page_content(url, &client) {
-///     Ok(page) => println!("Content: {}", page),
-///     Err(err) => eprintln!("Error: {}", err),
-/// }
+/// let url = "https://raw.githubusercontent.com/mariot/chan-downloader/master/.gitignore";
+/// async {
+///     let result = chan_downloader::get_page_content(url, &client).await.unwrap();
+///     assert_eq!(result, "/target/\nCargo.lock\n**/*.rs.bk\n");
+/// };
 /// ```
-pub fn get_page_content(url: &str, client: &Client) -> Result<String, Error> {
+pub async fn get_page_content(url: &str, client: &Client) -> Result<String, Error> {
     info!(target: "page_events", "Loading page: {}", url);
-    let response = client.get(url).send()?;
-    let content =  response.text()?;
+    let response = client.get(url).send().await?;
+    let content =  response.text().await?;
     info!("Loaded page: {}", url);
     Ok(content)
 }
@@ -94,23 +101,23 @@ pub fn get_thread_infos(url: &str) -> (&str, &str) {
 /// # Examples
 ///
 /// ```
-/// use reqwest::blocking::Client;
+/// use reqwest::Client;
 /// let client = Client::builder().user_agent("reqwest").build().unwrap();
 /// let url = "https://boards.4chan.org/wg/thread/6872254";
-/// match chan_downloader::get_page_content(url, &client) {
-///     Ok(page_string) => {
-///         let (links_iter, number_of_links) = chan_downloader::get_image_links(page_string.as_str());
-
-///         assert_eq!(number_of_links, 4);
+/// async {
+///     match chan_downloader::get_page_content(url, &client).await {
+///         Ok(page_string) => {
+///             let links_iter = chan_downloader::get_image_links(page_string.as_str());
 /// 
-///         for cap in links_iter.step_by(2) {
-///             println!("{} and {}", &cap[1], &cap[2]);
-///         }
-///     },
-///     Err(err) => eprintln!("Error: {}", err),
-/// }
+///             for link in links_iter {
+///                 println!("{} and {}", link.name, link.url);
+///             }
+///         },
+///         Err(err) => eprintln!("Error: {}", err),
+///     }
+/// };
 /// ```
-pub fn get_image_links(page_content: &str) -> (CaptureMatches, usize) {
+pub fn get_image_links(page_content: &str) -> Vec<Link> {
     info!(target: "link_events", "Getting image links");
     lazy_static! {
         static ref RE: Regex =
@@ -121,7 +128,11 @@ pub fn get_image_links(page_content: &str) -> (CaptureMatches, usize) {
     let links_iter = RE.captures_iter(page_content);
     let number_of_links = RE.captures_iter(page_content).count() / 2;
     info!("Got {} image links from page", number_of_links);
-    (links_iter, number_of_links)
+    let mut links_v: Vec<Link> = Vec::new();
+    for cap in links_iter.step_by(2) {
+        links_v.push(Link{ url: String::from(&cap[1]), name: String::from(&cap[2]) });
+    }
+    links_v
 }
 
 #[cfg(test)]
@@ -138,38 +149,34 @@ mod tests {
 
     #[test]
     fn it_gets_image_links() {
-        let (links_iter, number_of_links) = get_image_links("
+        let links_iter = get_image_links("
             <a href=\"//i.4cdn.org/wg/1489266570954.jpg\" target=\"_blank\">stickyop.jpg</a>
             <a href=\"//i.4cdn.org/wg/1489266570954.jpg\" target=\"_blank\">stickyop.jpg</a>
         ");
-        assert_eq!(number_of_links, 1);
-        for cap in links_iter.step_by(2) {
-            let url = &cap[1];
-            let filename = &cap[2];
-            assert_eq!(url, "//i.4cdn.org/wg/1489266570954.jpg");
-            assert_eq!(filename, "1489266570954.jpg");
+        for link in links_iter {
+            assert_eq!(link.url, "//i.4cdn.org/wg/1489266570954.jpg");
+            assert_eq!(link.name, "1489266570954.jpg");
         }
     }
 
-    #[test]
-    fn it_gets_page_content() {
-        use reqwest::blocking::Client;
+    #[tokio::test]
+    async fn it_gets_page_content() {
+        use reqwest::Client;
         let client = Client::builder().user_agent("reqwest").build().unwrap();
         let url = "https://raw.githubusercontent.com/mariot/chan-downloader/master/.gitignore";
-        let result = get_page_content(url, &client).unwrap();
+        let result = get_page_content(url, &client).await.unwrap();
         assert_eq!(result, "/target/\nCargo.lock\n**/*.rs.bk\n");
-        assert_eq!(4, 2+2);
     }
 
-    #[test]
-    fn it_saves_image() {
-        use reqwest::blocking::Client;
+    #[tokio::test]
+    async fn it_saves_image() {
+        use reqwest::Client;
         use std::env;
         use std::fs::remove_file;
         let client = Client::builder().user_agent("reqwest").build().unwrap();
         let workpath = env::current_dir().unwrap().join("1489266570954.jpg");
         let url = "https://i.4cdn.org/wg/1489266570954.jpg";
-        let answer = save_image(url, workpath.to_str().unwrap(), &client).unwrap();
+        let answer = save_image(url, workpath.to_str().unwrap(), &client).await.unwrap();
         assert_eq!(workpath.to_str().unwrap(), answer);
         remove_file(answer).unwrap();
     }
