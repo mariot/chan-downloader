@@ -61,7 +61,7 @@ Returns the board name and thread id.
 ```
 let url = "https://boards.4chan.org/wg/thread/6872254";
 let (board_name, thread_id) = chan_downloader::get_thread_infos(url);
-///
+
 assert_eq!(board_name, "wg");
 assert_eq!(thread_id, "6872254");
 ```
