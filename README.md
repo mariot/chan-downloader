@@ -8,7 +8,7 @@ If you use the reload flag, previously saved image won't be redownloaded.
 
 Best results obtained while using the option `-c 4` (4 concurrent downloads).
 
-```
+```bash
 USAGE:
     chan-downloader [FLAGS] [OPTIONS] --thread <thread>
 
@@ -31,7 +31,7 @@ You can also use chan_downloader, the library used
 
 ## save_image
 Saves the image from the url to the given path. Returns the path on success
-```
+```rust
 use reqwest::Client;
 use std::env;
 use std::fs::remove_file;
@@ -46,7 +46,7 @@ remove_file(answer).unwrap();
 
 ## get_page_content
 Returns the page content from the given url.
-```
+```rust
 use reqwest::Client;
 let client = Client::new();
 let url = "https://boards.4chan.org/wg/thread/6872254";
@@ -58,7 +58,7 @@ match chan_downloader::get_page_content(url, &client) {
 
 ## get_thread_infos
 Returns the board name and thread id.
-```
+```rust
 let url = "https://boards.4chan.org/wg/thread/6872254";
 let (board_name, thread_id) = chan_downloader::get_thread_infos(url);
 
@@ -68,7 +68,7 @@ assert_eq!(thread_id, "6872254");
 
 ## get_image_links
 Returns the links and the number of links from a page. Note that the links are doubled.
-```
+```rust
 use reqwest::Client;
 let client = Client::new();
 let url = "https://boards.4chan.org/wg/thread/6872254";
