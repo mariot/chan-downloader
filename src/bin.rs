@@ -3,9 +3,10 @@ use std::{
     env,
     fs::create_dir_all,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, Once},
     thread,
     time::{Duration, Instant},
+    io::Write,
 };
 
 use anyhow::{anyhow, Context, Error, Result};
@@ -22,6 +23,8 @@ use clap::{
     Command,
     ValueHint,
 };
+use env_logger::fmt::Color as LogColor;
+use log::LevelFilter;
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{error, info};
 use once_cell::sync::Lazy;
@@ -29,9 +32,17 @@ use reqwest::Client;
 
 static DOWNLOADED_FILES: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
+/// Run `initialize_logging` one time
+///
+/// The place where this is used should only be ran once,
+/// but this is a precaution
+static ONCE: Once = Once::new();
+
 fn main() -> Result<()> {
-    env_logger::init();
     let matches = build_app().get_matches();
+    let verbosity = matches.get_one::<u8>("verbose").expect("Count always defaulted");
+
+    initialize_logging(*verbosity);
 
     let thread = matches
         .get_one::<String>("thread")
@@ -72,6 +83,43 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Initialize logging for this crate
+fn initialize_logging(verbosity: u8) {
+    ONCE.call_once(|| {
+        env_logger::Builder::new()
+            .format_timestamp(None)
+            .format(|buf, record| {
+                let mut style = buf.style();
+                let level_style = match record.level() {
+                    log::Level::Warn => style.set_color(LogColor::Yellow),
+                    log::Level::Info => style.set_color(LogColor::Green),
+                    log::Level::Debug => style.set_color(LogColor::Magenta),
+                    log::Level::Trace => style.set_color(LogColor::Cyan),
+                    log::Level::Error => style.set_color(LogColor::Red),
+                };
+
+                let mut style = buf.style();
+                let target_style = style.set_color(LogColor::Ansi256(14));
+
+                writeln!(
+                    buf,
+                    " {}: {} {}",
+                    level_style.value(record.level()),
+                    target_style.value(record.target()),
+                    record.args()
+                )
+            })
+            .filter(None, match &verbosity {
+                1 => LevelFilter::Warn,
+                2 => LevelFilter::Info,
+                3 => LevelFilter::Debug,
+                4 => LevelFilter::Trace,
+                _ => LevelFilter::Off,
+            })
+            .init();
+    });
 }
 
 fn mark_as_downloaded(file: &str) -> Result<&str, &str> {
@@ -187,6 +235,8 @@ fn create_directory(thread_link: &str, output: &str) -> Result<PathBuf> {
 
 /// Build the command-line application
 fn build_app() -> Command<'static> {
+    log::debug!("Building application");
+
     Command::new("chan-downloader")
         .bin_name("chan-downloader")
         .version(crate_version!())
