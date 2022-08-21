@@ -1,16 +1,23 @@
+// TODO: Implement --preserve-filenames
+//       This would preserve the filenames that are given to the files on the
+//       given website. It can be accomplished, by using their API.
+//       Example API URLs:
+// 4plebs: https://archive.4plebs.org/_/api/chan/thread?board=x&num=32661196
+//  4chan: https://a.4cdn.org/po/thread/570368.json
+
 use futures::stream::StreamExt;
 use std::{
     env,
     fs::create_dir_all,
+    io::Write,
     path::{Path, PathBuf},
     sync::{Mutex, Once},
     thread,
     time::{Duration, Instant},
-    io::Write,
 };
 
 use anyhow::{anyhow, Context, Error, Result};
-use chan_downloader::{get_image_links, get_page_content, get_thread_infos, save_image};
+use chan_downloader::{get_image_links, get_page_content, get_thread_info, save_image};
 use clap::{
     crate_authors,
     crate_description,
@@ -24,9 +31,8 @@ use clap::{
     ValueHint,
 };
 use env_logger::fmt::Color as LogColor;
-use log::LevelFilter;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{error, info};
+use log::{error, info, LevelFilter};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 
@@ -213,9 +219,12 @@ fn create_directory(thread_link: &str, output: &str) -> Result<PathBuf> {
     let workpath = env::current_dir()?;
     info!("Working from {}", workpath.display());
 
-    let (board_name, thread_id) = get_thread_infos(thread_link);
+    let thread = get_thread_info(thread_link);
 
-    let directory = workpath.join(output).join(board_name).join(thread_id);
+    let directory = workpath
+        .join(output)
+        .join(thread.board)
+        .join(format!("{}", thread.id));
     if !directory.exists() {
         match create_dir_all(&directory) {
             Ok(_) => {
@@ -269,13 +278,13 @@ fn build_app() -> Command<'static> {
                 .value_hint(ValueHint::DirPath)
                 .help("Output directory (Default is 'downloads')"),
         )
-        .arg(
-            Arg::new("preserve_filenames")
-                .short('p')
-                .long("preserve-filenames")
-                .takes_value(false)
-                .help("Preserve the filenames that are found on 4chan/4plebs"),
-        )
+        // .arg(
+        //     Arg::new("preserve_filenames")
+        //         .short('p')
+        //         .long("preserve-filenames")
+        //         .takes_value(false)
+        //         .help("Preserve the filenames that are found on 4chan/4plebs"),
+        // )
         .arg(
             Arg::new("reload")
                 .short('r')
