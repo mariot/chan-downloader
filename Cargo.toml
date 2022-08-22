@@ -8,7 +8,7 @@ license = "MIT"
 readme = "README.md"
 homepage = "https://github.com/mariot/chan-downloader"
 repository = "https://github.com/mariot/chan-downloader"
-keywords = ["cli", "4chan", "4plebs", "download", "downloader", "crawler"]
+keywords = ["cli", "4chan", "4plebs", "download", "crawler"]
 categories = ["command-line-utilities"]
 
 [lib]
