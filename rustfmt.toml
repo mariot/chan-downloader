@@ -1,0 +1,46 @@
+edition                      = "2021"
+newline_style                = "Unix"
+tab_spaces                   = 4
+hard_tabs                    = false
+unstable_features            = true
+comment_width                = 80
+wrap_comments                = true
+normalize_comments           = true
+normalize_doc_attributes     = false # #[doc] -> //!
+error_on_line_overflow       = true # change to fix errors
+error_on_unformatted         = false
+format_code_in_doc_comments  = true
+format_macro_bodies          = true
+format_macro_matchers        = true # $a: ident -> $a:ident
+format_strings               = true
+imports_granularity          = "Crate"
+imports_layout               = "HorizontalVertical"
+# group_imports                = "StdExternalCrate" # create 3 groups
+reorder_imports              = true
+reorder_modules              = true
+reorder_impl_items           = true
+match_arm_blocks             = false
+match_block_trailing_comma   = true
+trailing_semicolon           = true # continue, break, return
+overflow_delimited_expr      = true
+use_field_init_shorthand     = true  # F { x: x } -> F { x }
+use_try_shorthand            = true  # try!() -> ()?
+empty_item_single_line       = true  # fn foo() {}
+fn_single_line               = false # not fn foo() { println!() }
+where_single_line            = false
+max_width                    = 106
+struct_field_align_threshold = 20
+struct_lit_width             = 30
+struct_variant_width         = 60
+combine_control_expr         = true  # if expr within fn call
+condense_wildcard_suffixes   = true  # (_, _) -> ( .. )
+merge_derives                = true
+spaces_around_ranges         = false # 1 .. 5 -> 1..5
+type_punctuation_density     = "Wide" # S: Display+Debug=Foo -> spaces
+
+color                        = "Always"
+hex_literal_case             = "Upper" # "Preserve"
+# remove_nested_parens         = true
+
+# report_fixme = "Always"
+# report_todo  = "Always"
