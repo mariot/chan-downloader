@@ -214,7 +214,7 @@ mod tests {
         let client = Client::builder().user_agent("reqwest").build().unwrap();
         let url = "https://raw.githubusercontent.com/mariot/chan-downloader/master/.gitignore";
         let result = get_page_content(url, &client).await.unwrap();
-        assert_eq!(result, "/target/\nCargo.lock\n**/*.rs.bk\n");
+        assert_eq!(result, "/target/\nCargo.lock\n**/*.rs.bk\n.idea/");
     }
 
     #[tokio::test]
