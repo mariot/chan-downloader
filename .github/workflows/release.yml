@@ -1,11 +1,17 @@
 name: Release
 
-# Publish a GitHub release whose tag is the Cargo.toml version (e.g. v0.4.0):
-# the crate is published to crates.io and binaries are attached to the release.
+# Every push to master runs CI, then releases the Cargo.toml version if it
+# hasn't been released yet: crates.io publish, and GitHub release vX.Y.Z with
+# binaries. To make a new release, bump the version in Cargo.toml.
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,9 +20,42 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  version:
+    name: check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      on-crates-io: ${{ steps.check.outputs.on-crates-io }}
+      on-github: ${{ steps.check.outputs.on-github }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          name=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A "$name release workflow (github.com/$GITHUB_REPOSITORY)" \
+            "https://crates.io/api/v1/crates/$name/$version")
+          if [ "$status" = 200 ]; then on_crates_io=true; else on_crates_io=false; fi
+          echo "on-crates-io=$on_crates_io" >> "$GITHUB_OUTPUT"
+
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            on_github=true
+          else
+            on_github=false
+          fi
+          echo "on-github=$on_github" >> "$GITHUB_OUTPUT"
+
+          echo "$name $version: on crates.io: $on_crates_io, GitHub release: $on_github" >> "$GITHUB_STEP_SUMMARY"
+
   publish:
     name: publish to crates.io
-    needs: ci
+    needs: [ci, version]
+    if: needs.version.outputs.on-crates-io == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,22 +63,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Check tag matches Cargo.toml version
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
-            exit 1
-          fi
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
+  github-release:
+    name: create GitHub release
+    needs: [ci, version]
+    if: needs.version.outputs.on-github == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.version.outputs.version }}
+        run: |
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TAG" --generate-notes
+
   binaries:
     name: binary ${{ matrix.target }}
-    needs: ci
+    needs: [version, github-release]
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -70,8 +117,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.version.outputs.version }}
         run: |
-          name="chan-downloader-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="chan-downloader-$TAG-${{ matrix.target }}"
           dir="target/${{ matrix.target }}/release"
           if [ "${{ runner.os }}" = "Windows" ]; then
             asset="$name.zip"
@@ -80,4 +128,4 @@ jobs:
             asset="$name.tar.gz"
             tar -czf "$asset" -C "$dir" chan-downloader
           fi
-          gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+          gh release upload "$TAG" "$asset" -R "$GITHUB_REPOSITORY" --clobber
