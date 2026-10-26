@@ -3,6 +3,7 @@ name: Release
 # Every push to master runs CI, then releases the Cargo.toml version if it
 # hasn't been released yet: crates.io publish, and GitHub release vX.Y.Z with
 # binaries. To make a new release, bump the version in Cargo.toml.
+# Running it manually rebuilds the binaries of the current release.
 
 on:
   push:
@@ -77,16 +78,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ needs.version.outputs.version }}
         run: |
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "$TAG" --generate-notes
+            --title "$TAG" --notes-file .github/release-notes.md --generate-notes
 
   binaries:
-    name: binary ${{ matrix.target }}
-    needs: [version, github-release]
+    name: binary ${{ matrix.asset }}
+    needs: [ci, version, github-release]
+    if: >-
+      !cancelled() && needs.ci.result == 'success' &&
+      (needs.github-release.result == 'success' || github.event_name == 'workflow_dispatch')
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -96,14 +101,19 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            asset: chan-downloader-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+            asset: chan-downloader-linux-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
+            asset: chan-downloader-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
+            asset: chan-downloader-macos-arm64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            asset: chan-downloader-windows-x86_64.exe
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -113,19 +123,14 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --target ${{ matrix.target }}
-      - name: Package and upload
+      - name: Upload
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: v${{ needs.version.outputs.version }}
+          ASSET: ${{ matrix.asset }}
         run: |
-          name="chan-downloader-$TAG-${{ matrix.target }}"
-          dir="target/${{ matrix.target }}/release"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            asset="$name.zip"
-            7z a "$asset" "./$dir/chan-downloader.exe"
-          else
-            asset="$name.tar.gz"
-            tar -czf "$asset" -C "$dir" chan-downloader
-          fi
-          gh release upload "$TAG" "$asset" -R "$GITHUB_REPOSITORY" --clobber
+          bin="target/${{ matrix.target }}/release/chan-downloader"
+          [ "${{ runner.os }}" = "Windows" ] && bin="$bin.exe"
+          cp "$bin" "$ASSET"
+          gh release upload "$TAG" "$ASSET" -R "$GITHUB_REPOSITORY" --clobber
