@@ -11,32 +11,30 @@ use std::{
     fs::create_dir_all,
     io::Write,
     path::{Path, PathBuf},
-    sync::{Mutex, Once},
+    sync::{LazyLock, Mutex, Once},
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Context, Error, Result};
+use anyhow::{Context, Error, Result, anyhow};
 use chan_downloader::{get_image_links, get_page_content, get_thread_info, save_image};
 use clap::{
-    crate_authors,
-    crate_description,
-    crate_version,
-    value_parser,
-    AppSettings,
     Arg,
     ArgAction,
     ColorChoice,
     Command,
     ValueHint,
+    crate_authors,
+    crate_description,
+    crate_version,
+    value_parser,
 };
-use env_logger::fmt::Color as LogColor;
+use env_logger::fmt::style::{Ansi256Color, AnsiColor, Style};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{error, info, LevelFilter};
-use once_cell::sync::Lazy;
+use log::{LevelFilter, error, info};
 use reqwest::Client;
 
-static DOWNLOADED_FILES: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static DOWNLOADED_FILES: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 /// Run `initialize_logging` one time
 ///
@@ -56,7 +54,7 @@ fn main() -> Result<()> {
     let output = matches
         .get_one::<String>("output")
         .map_or_else(|| String::from("downloads"), Clone::clone);
-    let reload = matches.contains_id("reload");
+    let reload = matches.get_flag("reload");
     let interval = matches.get_one::<u64>("interval").unwrap_or(&5_u64);
     let limit = matches.get_one::<u64>("limit").unwrap_or(&120_u64);
     let concurrent = matches.get_one::<usize>("concurrent").unwrap_or(&2_usize);
@@ -97,23 +95,21 @@ fn initialize_logging(verbosity: u8) {
         env_logger::Builder::new()
             .format_timestamp(None)
             .format(|buf, record| {
-                let mut style = buf.style();
-                let level_style = match record.level() {
-                    log::Level::Warn => style.set_color(LogColor::Yellow),
-                    log::Level::Info => style.set_color(LogColor::Green),
-                    log::Level::Debug => style.set_color(LogColor::Magenta),
-                    log::Level::Trace => style.set_color(LogColor::Cyan),
-                    log::Level::Error => style.set_color(LogColor::Red),
+                let level_color = match record.level() {
+                    log::Level::Warn => AnsiColor::Yellow,
+                    log::Level::Info => AnsiColor::Green,
+                    log::Level::Debug => AnsiColor::Magenta,
+                    log::Level::Trace => AnsiColor::Cyan,
+                    log::Level::Error => AnsiColor::Red,
                 };
-
-                let mut style = buf.style();
-                let target_style = style.set_color(LogColor::Ansi256(14));
+                let level_style = Style::new().fg_color(Some(level_color.into()));
+                let target_style = Style::new().fg_color(Some(Ansi256Color(14).into()));
 
                 writeln!(
                     buf,
-                    " {}: {} {}",
-                    level_style.value(record.level()),
-                    target_style.value(record.target()),
+                    " {level_style}{}{level_style:#}: {target_style}{}{target_style:#} {}",
+                    record.level(),
+                    record.target(),
                     record.args()
                 )
             })
@@ -181,7 +177,7 @@ async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) 
                         match save_image(format!("https:{}", link.url).as_str(), image_path, client).await
                         {
                             Ok(path) => {
-                                info!("Saved image to {}", &path);
+                                info!("Saved image to {}", path);
                                 let result = mark_as_downloaded(&path).unwrap();
                                 info!("{} added to downloaded files", result);
                             },
@@ -243,7 +239,7 @@ fn create_directory(thread_link: &str, output: &str) -> Result<PathBuf> {
 }
 
 /// Build the command-line application
-fn build_app() -> Command<'static> {
+fn build_app() -> Command {
     log::debug!("Building application");
 
     Command::new("chan-downloader")
@@ -256,7 +252,6 @@ fn build_app() -> Command<'static> {
         } else {
             ColorChoice::Never
         })
-        .setting(AppSettings::DeriveDisplayOrder)
         .infer_long_args(true)
         .dont_collapse_args_in_usage(true)
         .arg(
@@ -264,7 +259,6 @@ fn build_app() -> Command<'static> {
                 .short('t')
                 .long("thread")
                 .required(true)
-                .takes_value(true)
                 .value_name("URL")
                 .value_parser(clap::builder::NonEmptyStringValueParser::new())
                 .help("URL of the thread"),
@@ -273,7 +267,6 @@ fn build_app() -> Command<'static> {
             Arg::new("output")
                 .short('o')
                 .long("output")
-                .takes_value(true)
                 .value_name("DIRECTORY")
                 .value_hint(ValueHint::DirPath)
                 .help("Output directory (Default is 'downloads')"),
@@ -282,21 +275,20 @@ fn build_app() -> Command<'static> {
         //     Arg::new("preserve_filenames")
         //         .short('p')
         //         .long("preserve-filenames")
-        //         .takes_value(false)
+        //         .action(ArgAction::SetTrue)
         //         .help("Preserve the filenames that are found on 4chan/4plebs"),
         // )
         .arg(
             Arg::new("reload")
                 .short('r')
                 .long("reload")
-                .takes_value(false)
+                .action(ArgAction::SetTrue)
                 .help("Reload thread every t minutes to get new images"),
         )
         .arg(
             Arg::new("interval")
                 .short('i')
                 .long("interval")
-                .takes_value(true)
                 .value_name("INTERVAL")
                 .value_parser(value_parser!(u64))
                 .help("Time between each reload (in minutes. Default is 5)"),
@@ -305,7 +297,6 @@ fn build_app() -> Command<'static> {
             Arg::new("limit")
                 .short('l')
                 .long("limit")
-                .takes_value(true)
                 .value_name("LIMIT")
                 .value_parser(value_parser!(u64))
                 .help("Time limit for execution (in minutes. Default is 120)"),
@@ -314,7 +305,6 @@ fn build_app() -> Command<'static> {
             Arg::new("concurrent")
                 .short('c')
                 .long("concurrent")
-                .takes_value(true)
                 .value_name("NUM-REQUESTS")
                 .value_parser(value_parser!(usize))
                 .help("Number of concurrent requests (Default is 2)"),
@@ -323,7 +313,6 @@ fn build_app() -> Command<'static> {
             Arg::new("verbose")
                 .short('v')
                 .long("verbose")
-                .takes_value(false)
                 .hide(true)
                 .action(ArgAction::Count)
                 .help("Display debugging messages"),

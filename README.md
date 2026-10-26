@@ -9,20 +9,17 @@ If you use the reload flag, previously saved image won't be redownloaded.
 Best results obtained while using the option `-c 4` (4 concurrent downloads).
 
 ```bash
-USAGE:
-    chan-downloader [FLAGS] [OPTIONS] --thread <thread>
+Usage: chan-downloader [OPTIONS] --thread <URL>
 
-FLAGS:
-    -h, --help       Prints help information
-    -r, --reload     Reload thread every t minutes to get new images
-    -V, --version    Prints version information
-
-OPTIONS:
-    -c, --concurrent <concurrent>    Number of concurrent requests (Default is 2)
-    -i, --interval <interval>        Time between each reload (in minutes. Default is 5)
-    -l, --limit <limit>              Time limit for execution (in minutes. Default is 120)
-    -o, --output <output>            Output directory (Default is 'downloads')
-    -t, --thread <thread>            URL of the thread
+Options:
+  -t, --thread <URL>               URL of the thread
+  -o, --output <DIRECTORY>         Output directory (Default is 'downloads')
+  -r, --reload                     Reload thread every t minutes to get new images
+  -i, --interval <INTERVAL>        Time between each reload (in minutes. Default is 5)
+  -l, --limit <LIMIT>              Time limit for execution (in minutes. Default is 120)
+  -c, --concurrent <NUM-REQUESTS>  Number of concurrent requests (Default is 2)
+  -h, --help                       Print help
+  -V, --version                    Print version
 ```
 
 chan_downloader

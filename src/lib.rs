@@ -32,8 +32,8 @@ pub struct Link {
 /// use reqwest::Client;
 /// use std::{env, fs::remove_file};
 /// let client = Client::builder().user_agent("reqwest").build().unwrap();
-/// let workpath = env::current_dir().unwrap().join("1489266570954.jpg");
-/// let url = "https://i.4cdn.org/wg/1489266570954.jpg";
+/// let workpath = env::current_dir().unwrap().join("1745612650141704.png");
+/// let url = "https://i.4cdn.org/g/1745612650141704.png";
 /// async {
 ///     let answer = chan_downloader::save_image(url, workpath.to_str().unwrap(), &client)
 ///         .await
@@ -44,13 +44,11 @@ pub struct Link {
 /// ```
 pub async fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Error> {
     info!(target: "image_events", "Saving image to: {}", path);
-    let response = client.get(url).send().await?;
+    let response = client.get(url).send().await?.error_for_status()?;
 
-    if response.status().is_success() {
-        let mut dest = File::create(path).unwrap();
-        let mut content = Cursor::new(response.bytes().await?);
-        io::copy(&mut content, &mut dest).unwrap();
-    }
+    let mut dest = File::create(path).unwrap();
+    let mut content = Cursor::new(response.bytes().await?);
+    io::copy(&mut content, &mut dest).unwrap();
     info!("Saved image to: {}", path);
     Ok(String::from(path))
 }
@@ -155,7 +153,7 @@ pub fn get_image_links(page_content: &str) -> Vec<Link> {
 #[macro_export]
 macro_rules! regex {
     ($re:expr $(,)?) => {{
-        static RE: once_cell::sync::OnceCell<regex::Regex> = once_cell::sync::OnceCell::new();
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         RE.get_or_init(|| regex::Regex::new($re).unwrap())
     }};
 }
@@ -204,7 +202,10 @@ mod tests {
         "#,
         );
         for link in links_iter {
-            assert_eq!(link.url, "//img.4plebs.org/boards/x/image/1660/66/1660662319160984.png");
+            assert_eq!(
+                link.url,
+                "//img.4plebs.org/boards/x/image/1660/66/1660662319160984.png"
+            );
             assert_eq!(link.name, "1660662319160984.png");
         }
     }
@@ -221,8 +222,8 @@ mod tests {
     async fn it_saves_4chan_image() {
         use std::{env, fs};
         let client = Client::builder().user_agent("reqwest").build().unwrap();
-        let workpath = env::current_dir().unwrap().join("1489266570954.jpg");
-        let url = "https://i.4cdn.org/wg/1489266570954.jpg";
+        let workpath = env::current_dir().unwrap().join("1745612650141704.png");
+        let url = "https://i.4cdn.org/g/1745612650141704.png";
         let answer = save_image(url, workpath.to_str().unwrap(), &client)
             .await
             .unwrap();
