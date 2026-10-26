@@ -319,7 +319,109 @@ fn build_app() -> Command {
         )
 }
 
-#[test]
-fn verify_app() {
-    build_app().debug_assert();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const THREAD: &str = "https://boards.4chan.org/wg/thread/6872254";
+
+    #[test]
+    fn verify_app() {
+        build_app().debug_assert();
+    }
+
+    #[test]
+    fn it_requires_a_thread() {
+        let err = build_app().try_get_matches_from(["chan-downloader"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn it_rejects_an_empty_thread() {
+        assert!(
+            build_app()
+                .try_get_matches_from(["chan-downloader", "-t", ""])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn it_leaves_optional_args_unset_by_default() {
+        let matches = build_app()
+            .try_get_matches_from(["chan-downloader", "-t", THREAD])
+            .unwrap();
+        assert_eq!(matches.get_one::<String>("thread").unwrap(), THREAD);
+        assert!(!matches.get_flag("reload"));
+        assert_eq!(matches.get_count("verbose"), 0);
+        assert!(matches.get_one::<String>("output").is_none());
+        assert!(matches.get_one::<u64>("interval").is_none());
+        assert!(matches.get_one::<u64>("limit").is_none());
+        assert!(matches.get_one::<usize>("concurrent").is_none());
+    }
+
+    #[test]
+    fn it_parses_all_args() {
+        let matches = build_app()
+            .try_get_matches_from([
+                "chan-downloader",
+                "-t",
+                THREAD,
+                "-o",
+                "out",
+                "-r",
+                "-i",
+                "10",
+                "-l",
+                "60",
+                "-c",
+                "4",
+                "-vvv",
+            ])
+            .unwrap();
+        assert_eq!(matches.get_one::<String>("output").unwrap(), "out");
+        assert!(matches.get_flag("reload"));
+        assert_eq!(*matches.get_one::<u64>("interval").unwrap(), 10);
+        assert_eq!(*matches.get_one::<u64>("limit").unwrap(), 60);
+        assert_eq!(*matches.get_one::<usize>("concurrent").unwrap(), 4);
+        assert_eq!(matches.get_count("verbose"), 3);
+    }
+
+    #[test]
+    fn it_infers_long_args() {
+        let matches = build_app()
+            .try_get_matches_from(["chan-downloader", "--thr", THREAD, "--conc", "3"])
+            .unwrap();
+        assert_eq!(*matches.get_one::<usize>("concurrent").unwrap(), 3);
+    }
+
+    #[test]
+    fn it_rejects_non_numeric_values() {
+        for arg in ["-i", "-l", "-c"] {
+            let err = build_app()
+                .try_get_matches_from(["chan-downloader", "-t", THREAD, arg, "abc"])
+                .unwrap_err();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn it_creates_board_and_thread_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("downloads");
+        let created = create_directory(THREAD, output.to_str().unwrap()).unwrap();
+        assert_eq!(created, output.join("wg").join("6872254"));
+        assert!(created.is_dir());
+        // Running again on an existing directory is fine
+        assert_eq!(
+            create_directory(THREAD, output.to_str().unwrap()).unwrap(),
+            created
+        );
+    }
+
+    #[test]
+    fn it_tracks_downloaded_files() {
+        let file = "/tmp/chan-downloader-test/1.png";
+        assert_eq!(mark_as_downloaded(file).unwrap(), file);
+        assert!(DOWNLOADED_FILES.lock().unwrap().contains(&file.to_string()));
+    }
 }

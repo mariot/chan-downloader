@@ -30,3 +30,7 @@ log = "0.4.34"
 regex = "1.13.1"
 reqwest = "0.13.5"
 tokio = { version = "1.54.1", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+wiremock = "0.6.5"

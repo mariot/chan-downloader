@@ -162,6 +162,12 @@ macro_rules! regex {
 mod tests {
     use super::*;
     use reqwest::Client;
+    use wiremock::{
+        Mock,
+        MockServer,
+        ResponseTemplate,
+        matchers::{method, path},
+    };
 
     #[test]
     fn it_gets_4chan_thread_info() {
@@ -187,6 +193,7 @@ mod tests {
             <a href="//i.4cdn.org/wg/1489266570954.jpg" target="_blank">stickyop.jpg</a>
         "#,
         );
+        assert_eq!(links_iter.len(), 1);
         for link in links_iter {
             assert_eq!(link.url, "//i.4cdn.org/wg/1489266570954.jpg");
             assert_eq!(link.name, "1489266570954.jpg");
@@ -201,6 +208,7 @@ mod tests {
             <a href="https://img.4plebs.org/boards/x/image/1660/66/1660662319160984.png" target="_blank"></a>
         "#,
         );
+        assert_eq!(links_iter.len(), 1);
         for link in links_iter {
             assert_eq!(
                 link.url,
@@ -210,37 +218,142 @@ mod tests {
         }
     }
 
+    #[test]
+    fn it_gets_thread_info_with_slug() {
+        let url = "https://boards.4chan.org/p/thread/4535213/bdp-bird-posting-discussion";
+        let thread = get_thread_info(url);
+        assert_eq!(thread.board, "p");
+        assert_eq!(thread.id, 4535213);
+    }
+
+    #[test]
+    fn it_gets_thread_info_with_post_anchor() {
+        let thread = get_thread_info("https://boards.4chan.org/wg/thread/6872254#p6872300");
+        assert_eq!(thread.board, "wg");
+        assert_eq!(thread.id, 6872254);
+    }
+
+    #[test]
+    #[should_panic(expected = "failed to parse thread id")]
+    fn it_panics_on_non_numeric_thread_id() {
+        let _ = get_thread_info("https://boards.4chan.org/wg/thread/catalog");
+    }
+
+    #[test]
+    fn it_keeps_one_link_per_image_in_page_order() {
+        // 4chan pages contain each full-size image link twice
+        let links = get_image_links(
+            r#"
+            <a href="//i.4cdn.org/wg/1111111111111.png">a.png</a>
+            <a href="//i.4cdn.org/wg/1111111111111.png"><img src="//i.4cdn.org/wg/1111111111111s.jpg"></a>
+            <a href="//i.4cdn.org/wg/2222222222222.webm">b.webm</a>
+            <a href="//i.4cdn.org/wg/2222222222222.webm"><img src="//i.4cdn.org/wg/2222222222222s.jpg"></a>
+        "#,
+        );
+        let names: Vec<&str> = links.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["1111111111111.png", "2222222222222.webm"]);
+        assert_eq!(links[1].url, "//i.4cdn.org/wg/2222222222222.webm");
+    }
+
+    #[test]
+    fn it_matches_all_supported_extensions_and_hosts() {
+        let links = get_image_links(
+            r#"
+            //i.4cdn.org/g/1.jpg //i.4cdn.org/g/1.jpg
+            //is2.4chan.org/g/2.gif //is2.4chan.org/g/2.gif
+            //img.4plebs.org/boards/x/image/1660/66/3.webm //img.4plebs.org/boards/x/image/1660/66/3.webm
+        "#,
+        );
+        let names: Vec<&str> = links.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["1.jpg", "2.gif", "3.webm"]);
+    }
+
+    #[test]
+    fn it_ignores_other_hosts_and_extensions() {
+        let links = get_image_links(
+            r#"
+            //i.example.org/g/1.jpg //i.example.org/g/1.jpg
+            //i.4cdn.org/g/2.pdf //i.4cdn.org/g/2.pdf
+        "#,
+        );
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn it_finds_no_links_in_empty_page() {
+        assert!(get_image_links("").is_empty());
+    }
+
     #[tokio::test]
     async fn it_gets_page_content() {
-        let client = Client::builder().user_agent("reqwest").build().unwrap();
-        let url = "https://raw.githubusercontent.com/mariot/chan-downloader/master/.gitignore";
-        let result = get_page_content(url, &client).await.unwrap();
-        assert_eq!(result, "/target/\nCargo.lock\n**/*.rs.bk\n.idea/");
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/wg/thread/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>thread</html>"))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/wg/thread/1", server.uri());
+        let result = get_page_content(&url, &Client::new()).await.unwrap();
+        assert_eq!(result, "<html>thread</html>");
     }
 
     #[tokio::test]
-    async fn it_saves_4chan_image() {
-        use std::{env, fs};
+    async fn it_saves_image() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/wg/1.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"\x89PNG fake".to_vec()))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("1.png");
+        let dest = dest.to_str().unwrap();
+        let url = format!("{}/wg/1.png", server.uri());
+        let answer = save_image(&url, dest, &Client::new()).await.unwrap();
+        assert_eq!(answer, dest);
+        assert_eq!(std::fs::read(dest).unwrap(), b"\x89PNG fake");
+    }
+
+    #[tokio::test]
+    async fn it_fails_to_save_missing_image() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("1.png");
+        let url = format!("{}/wg/1.png", server.uri());
+        let err = save_image(&url, dest.to_str().unwrap(), &Client::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), Some(reqwest::StatusCode::NOT_FOUND));
+        assert!(!dest.exists());
+    }
+
+    // Tests against the live sites. Run with `cargo test -- --ignored`
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn it_saves_live_4chan_image() {
         let client = Client::builder().user_agent("reqwest").build().unwrap();
-        let workpath = env::current_dir().unwrap().join("1745612650141704.png");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("1745612650141704.png");
         let url = "https://i.4cdn.org/g/1745612650141704.png";
-        let answer = save_image(url, workpath.to_str().unwrap(), &client)
-            .await
-            .unwrap();
-        assert_eq!(workpath.to_str().unwrap(), answer);
-        fs::remove_file(answer).unwrap();
+        save_image(url, dest.to_str().unwrap(), &client).await.unwrap();
+        assert!(dest.metadata().unwrap().len() > 0);
     }
 
     #[tokio::test]
-    async fn it_saves_4plebs_image() {
-        use std::{env, fs};
+    #[ignore = "hits the network"]
+    async fn it_saves_live_4plebs_image() {
         let client = Client::builder().user_agent("reqwest").build().unwrap();
-        let workpath = env::current_dir().unwrap().join("1614942709612.jpg");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("1614942709612.jpg");
         let url = "https://img.4plebs.org/boards/x/image/1614/94/1614942709612.jpg";
-        let answer = save_image(url, workpath.to_str().unwrap(), &client)
-            .await
-            .unwrap();
-        assert_eq!(workpath.to_str().unwrap(), answer);
-        fs::remove_file(answer).unwrap();
+        save_image(url, dest.to_str().unwrap(), &client).await.unwrap();
+        assert!(dest.metadata().unwrap().len() > 0);
     }
 }
