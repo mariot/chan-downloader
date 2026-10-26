@@ -8,16 +8,28 @@
 use futures::stream::StreamExt;
 use std::{
     env,
-    fs::create_dir_all,
+    fs::{create_dir_all, remove_dir},
     io::Write,
     path::{Path, PathBuf},
-    sync::{LazyLock, Mutex, Once},
+    sync::{
+        LazyLock,
+        Mutex,
+        Once,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Error, Result, anyhow};
-use chan_downloader::{get_image_links, get_page_content, get_thread_info, save_image};
+use anyhow::{Context, Error, Result, anyhow, bail};
+use chan_downloader::{
+    get_api_image_links,
+    get_api_url,
+    get_image_links,
+    get_page_content,
+    get_thread_info,
+    save_image,
+};
 use clap::{
     Arg,
     ArgAction,
@@ -72,7 +84,11 @@ fn main() -> Result<()> {
     };
     loop {
         let load_start = Instant::now();
-        explore_thread(thread, &directory, *concurrent).unwrap();
+        if let Err(err) = explore_thread(thread, &directory, *concurrent) {
+            // Don't leave an empty directory behind (fails if it has files)
+            let _ = remove_dir(&directory);
+            return Err(err);
+        }
         let runtime = start.elapsed();
         let load_runtime = load_start.elapsed();
         if runtime > limit_time {
@@ -136,14 +152,17 @@ fn mark_as_downloaded(file: &str) -> Result<&str, &str> {
 #[tokio::main]
 async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) -> Result<(), Error> {
     let start = Instant::now();
-    let client = Client::builder().user_agent("reqwest").build()?;
+    let client = Client::builder()
+        .user_agent(concat!("chan-downloader/", env!("CARGO_PKG_VERSION")))
+        .build()?;
 
-    match get_page_content(thread_link, &client).await {
-        Ok(page_string) => {
+    match get_links(thread_link, &client).await {
+        Ok(links_vec) => {
             info!("Loaded content from {}", thread_link);
 
-            let links_vec = get_image_links(page_string.as_str());
-            let pb = ProgressBar::new(links_vec.len() as u64);
+            let total = links_vec.len();
+            let failed = AtomicUsize::new(0);
+            let pb = ProgressBar::new(total as u64);
 
             pb.set_style(
                 ProgressStyle::default_bar()
@@ -159,6 +178,7 @@ async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) 
             let fetches = futures::stream::iter(links_vec.into_iter().map(|link| {
                 let client = &client;
                 let pb = &pb;
+                let failed = &failed;
                 async move {
                     let img_path = directory.join(link.name);
                     let image_path = img_path.to_str().unwrap();
@@ -182,6 +202,7 @@ async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) 
                                 info!("{} added to downloaded files", result);
                             },
                             Err(err) => {
+                                failed.fetch_add(1, Ordering::Relaxed);
                                 error!("Couldn't save image {}", image_path);
                                 eprintln!("Error: {}", err);
                             },
@@ -200,15 +221,56 @@ async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) 
 
             pb.finish_with_message("Done");
             info!("Done in {:?}", start.elapsed());
+
+            let failed = failed.into_inner();
+            if failed == total {
+                bail!(
+                    "could not download any of the {total} files of {thread_link}: the site may be \
+                     blocking the downloader (e.g. a Cloudflare check)"
+                );
+            }
+            if failed > 0 {
+                eprintln!("Warning: {failed} of {total} files could not be downloaded");
+            }
         },
         Err(e) => {
             error!("Failed to get content from {}", thread_link);
-            eprintln!("Error: {}", e);
-            return Err(anyhow!(e));
+            return Err(e);
         },
     }
 
     Ok(())
+}
+
+/// Returns the image links of a thread: from the API for 4chan, from the page
+/// for other sites. Fails if there are none, so that a blocked or changed page
+/// is not silently treated as an empty thread.
+async fn get_links(thread_link: &str, client: &Client) -> Result<Vec<chan_downloader::Link>> {
+    let links = if let Some(api_url) = get_api_url(thread_link) {
+        let board = get_thread_info(thread_link).board;
+        let json = get_page_content(&api_url, client)
+            .await
+            .with_context(|| format!("failed to load thread {thread_link} from {api_url}"))?;
+        let links = get_api_image_links(&json, &board)
+            .with_context(|| format!("unexpected response from {api_url}"))?;
+        if links.is_empty() {
+            bail!("no images found in {thread_link}");
+        }
+        links
+    } else {
+        let page = get_page_content(thread_link, client)
+            .await
+            .with_context(|| format!("failed to load {thread_link}"))?;
+        let links = get_image_links(&page);
+        if links.is_empty() {
+            bail!(
+                "no images found in {thread_link}: the site may be blocking the downloader (e.g. a \
+                 Cloudflare check) or its page layout may have changed"
+            );
+        }
+        links
+    };
+    Ok(links)
 }
 
 fn create_directory(thread_link: &str, output: &str) -> Result<PathBuf> {
