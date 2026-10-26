@@ -1,6 +1,6 @@
 [package]
 name = "chan-downloader"
-description = "CLI to download all images/webms of a 4chan thread"
+description = "CLI to download all images/videos of a 4chan thread"
 version = "0.4.0"
 authors = ["Mariot Tsitoara <mariot.tsitoara@pm.me>"]
 edition = "2024"

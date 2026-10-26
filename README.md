@@ -2,7 +2,7 @@ chan-downloader
 ===============
 Clone of [4chan-downloader](https://github.com/Exceen/4chan-downloader/) written in Rust
 
-CLI to download all images/webms of a 4chan thread.
+CLI to download all images and videos (jpg, png, gif, webm, mp4, pdf) of a 4chan thread.
 
 If you use the reload flag, previously saved image won't be redownloaded.
 

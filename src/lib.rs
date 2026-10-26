@@ -1,11 +1,12 @@
 //! # chan_downloader
 //!
 //! `chan_downloader` is a collection of utilities to
-//! download images/webms from a 4chan thread
+//! download images/videos from a 4chan thread
 
 use log::info;
 use reqwest::{Client, Error};
 use std::{
+    collections::HashSet,
     fs::File,
     io::{self, Cursor},
 };
@@ -103,8 +104,8 @@ pub fn get_thread_info(url: &str) -> Thread {
     }
 }
 
-/// Returns the links and the number of links from a page.
-/// Note that the links are doubled
+/// Returns the image/video links from a page, without duplicates and in page
+/// order. Supported extensions: jpg, png, gif, webm, mp4 and pdf.
 ///
 /// # Examples
 ///
@@ -133,19 +134,21 @@ pub fn get_thread_info(url: &str) -> Thread {
 pub fn get_image_links(page_content: &str) -> Vec<Link> {
     info!(target: "link_events", "Getting image links");
     let reg = regex!(
-        r"(//i(?:s|mg)?(?:\d*)?\.(?:4cdn|4chan|4plebs)\.org/(?:\w+/){1,3}(?:\d+/){0,2}(\d+\.(?:jpg|png|gif|webm)))"
+        r"(//i(?:s|mg)?(?:\d*)?\.(?:4cdn|4chan|4plebs)\.org/(?:\w+/){1,3}(?:\d+/){0,2}(\d+\.(?:jpg|png|gif|webm|mp4|pdf)))"
     );
 
-    let links_iter = reg.captures_iter(page_content);
-    let number_of_links = reg.captures_iter(page_content).count() / 2;
-    info!("Got {} image links from page", number_of_links);
-    let mut links_v: Vec<Link> = Vec::new();
-    for cap in links_iter.step_by(2) {
-        links_v.push(Link {
+    // A link appears several times per post: twice for images, three times
+    // for videos (extra `<link itemprop="contentUrl">`)
+    let mut seen = HashSet::new();
+    let links_v: Vec<Link> = reg
+        .captures_iter(page_content)
+        .filter(|cap| seen.insert(cap[1].to_owned()))
+        .map(|cap| Link {
             url:  String::from(&cap[1]),
             name: String::from(&cap[2]),
-        });
-    }
+        })
+        .collect();
+    info!("Got {} image links from page", links_v.len());
     links_v
 }
 
@@ -262,10 +265,39 @@ mod tests {
             //i.4cdn.org/g/1.jpg //i.4cdn.org/g/1.jpg
             //is2.4chan.org/g/2.gif //is2.4chan.org/g/2.gif
             //img.4plebs.org/boards/x/image/1660/66/3.webm //img.4plebs.org/boards/x/image/1660/66/3.webm
+            //i.4cdn.org/3/4.mp4 //i.4cdn.org/3/4.mp4
+            //img.4plebs.org/boards/x/image/1660/66/5.mp4 //img.4plebs.org/boards/x/image/1660/66/5.mp4
+            //i.4cdn.org/po/6.pdf //i.4cdn.org/po/6.pdf
         "#,
         );
         let names: Vec<&str> = links.iter().map(|l| l.name.as_str()).collect();
-        assert_eq!(names, ["1.jpg", "2.gif", "3.webm"]);
+        assert_eq!(names, ["1.jpg", "2.gif", "3.webm", "4.mp4", "5.mp4", "6.pdf"]);
+    }
+
+    #[test]
+    fn it_gets_each_video_once() {
+        // Trimmed from a real /3/ thread: videos are linked three times
+        let links = get_image_links(
+            r#"
+            <div class="fileText"><a href="//i.4cdn.org/3/1111111111111.png" target="_blank">a.png</a></div>
+            <a class="fileThumb" href="//i.4cdn.org/3/1111111111111.png"><img src="//i.4cdn.org/3/1111111111111s.jpg"></a>
+            <link itemprop="contentUrl" href="//i.4cdn.org/3/2222222222222.mp4">
+            <div class="fileText"><a href="//i.4cdn.org/3/2222222222222.mp4" target="_blank">b.mp4</a></div>
+            <a class="fileThumb" href="//i.4cdn.org/3/2222222222222.mp4"><img src="//i.4cdn.org/3/2222222222222s.jpg"></a>
+            <link itemprop="contentUrl" href="//i.4cdn.org/3/3333333333333.webm">
+            <div class="fileText"><a href="//i.4cdn.org/3/3333333333333.webm" target="_blank">c.webm</a></div>
+            <a class="fileThumb" href="//i.4cdn.org/3/3333333333333.webm"><img src="//i.4cdn.org/3/3333333333333s.jpg"></a>
+            <div class="fileText"><a href="//i.4cdn.org/3/4444444444444.jpg" target="_blank">d.jpg</a></div>
+            <a class="fileThumb" href="//i.4cdn.org/3/4444444444444.jpg"><img src="//i.4cdn.org/3/4444444444444s.jpg"></a>
+        "#,
+        );
+        let names: Vec<&str> = links.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, [
+            "1111111111111.png",
+            "2222222222222.mp4",
+            "3333333333333.webm",
+            "4444444444444.jpg"
+        ]);
     }
 
     #[test]
@@ -273,7 +305,7 @@ mod tests {
         let links = get_image_links(
             r#"
             //i.example.org/g/1.jpg //i.example.org/g/1.jpg
-            //i.4cdn.org/g/2.pdf //i.4cdn.org/g/2.pdf
+            //i.4cdn.org/g/2.txt //i.4cdn.org/g/2.txt
         "#,
         );
         assert!(links.is_empty());
