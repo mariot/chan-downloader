@@ -60,9 +60,10 @@ fn main() -> Result<()> {
 
     initialize_logging(*verbosity);
 
-    let thread = matches
-        .get_one::<String>("thread")
-        .context("failed to get 'thread' value")?;
+    let threads: Vec<&String> = matches
+        .get_many::<String>("thread")
+        .context("failed to get 'thread' value")?
+        .collect();
     let output = matches
         .get_one::<String>("output")
         .map_or_else(|| String::from("downloads"), Clone::clone);
@@ -71,9 +72,14 @@ fn main() -> Result<()> {
     let limit = matches.get_one::<u64>("limit").unwrap_or(&120_u64);
     let concurrent = matches.get_one::<usize>("concurrent").unwrap_or(&2_usize);
 
-    info!("Downloading images from {} to {}", thread, output);
+    info!("Downloading images from {:?} to {}", threads, output);
 
-    let directory = create_directory(thread, &output)?;
+    let mut active = threads
+        .iter()
+        .map(|thread| Ok((thread.as_str(), create_directory(thread, &output)?)))
+        .collect::<Result<Vec<(&str, PathBuf)>>>()?;
+    let total = active.len();
+    let mut errors: Vec<Error> = Vec::new();
 
     let start = Instant::now();
     let wait_time = Duration::from_secs(60 * interval);
@@ -84,14 +90,25 @@ fn main() -> Result<()> {
     };
     loop {
         let load_start = Instant::now();
-        if let Err(err) = explore_thread(thread, &directory, *concurrent) {
-            // Don't leave an empty directory behind (fails if it has files)
-            let _ = remove_dir(&directory);
-            return Err(err);
-        }
+        // A failed thread doesn't stop the others, and isn't reloaded
+        active.retain(
+            |(thread, directory)| match explore_thread(thread, directory, *concurrent) {
+                Ok(()) => true,
+                Err(err) => {
+                    // Don't leave an empty directory behind (fails if it has
+                    // files)
+                    let _ = remove_dir(directory);
+                    if total > 1 {
+                        eprintln!("Error: {err:#}");
+                    }
+                    errors.push(err);
+                    false
+                },
+            },
+        );
         let runtime = start.elapsed();
         let load_runtime = load_start.elapsed();
-        if runtime > limit_time {
+        if active.is_empty() || runtime > limit_time {
             info!("Runtime exceeded, exiting.");
             break;
         };
@@ -102,7 +119,11 @@ fn main() -> Result<()> {
         info!("Downloader executed one more time for {:?}", load_runtime);
     }
 
-    Ok(())
+    match errors.len() {
+        0 => Ok(()),
+        _ if total == 1 => Err(errors.remove(0)),
+        failed => bail!("{failed} of {total} threads failed"),
+    }
 }
 
 /// Initialize logging for this crate
@@ -173,6 +194,7 @@ async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) 
                     .context("failed to build progress bar")?
                     .progress_chars("#>-"),
             );
+            pb.set_message(thread_link.to_owned());
             pb.tick();
 
             let fetches = futures::stream::iter(links_vec.into_iter().map(|link| {
@@ -219,7 +241,7 @@ async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) 
             .collect::<Vec<()>>();
             fetches.await;
 
-            pb.finish_with_message("Done");
+            pb.finish_with_message(format!("{thread_link} done"));
             info!("Done in {:?}", start.elapsed());
 
             let failed = failed.into_inner();
@@ -321,9 +343,11 @@ fn build_app() -> Command {
                 .short('t')
                 .long("thread")
                 .required(true)
+                .num_args(1..)
+                .action(ArgAction::Append)
                 .value_name("URL")
                 .value_parser(clap::builder::NonEmptyStringValueParser::new())
-                .help("URL of the thread"),
+                .help("URL of the thread (several can be given)"),
         )
         .arg(
             Arg::new("output")
@@ -446,6 +470,20 @@ mod tests {
         assert_eq!(*matches.get_one::<u64>("limit").unwrap(), 60);
         assert_eq!(*matches.get_one::<usize>("concurrent").unwrap(), 4);
         assert_eq!(matches.get_count("verbose"), 3);
+    }
+
+    #[test]
+    fn it_accepts_several_threads() {
+        const OTHER: &str = "https://boards.4chan.org/p/thread/4535213";
+        for args in [
+            vec!["chan-downloader", "-t", THREAD, OTHER],
+            vec!["chan-downloader", "-t", THREAD, "-t", OTHER],
+            vec!["chan-downloader", "-t", THREAD, "-r", "--thread", OTHER],
+        ] {
+            let matches = build_app().try_get_matches_from(&args).unwrap();
+            let threads: Vec<&String> = matches.get_many::<String>("thread").unwrap().collect();
+            assert_eq!(threads, [THREAD, OTHER], "{args:?}");
+        }
     }
 
     #[test]

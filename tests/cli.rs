@@ -93,6 +93,31 @@ mod thread_errors {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn it_keeps_going_when_one_of_several_threads_fails() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let first = format!("{}/wg/thread/1", server.uri());
+        let second = format!("{}/p/thread/2", server.uri());
+
+        let output = bin()
+            .args(["-t", &first, &second])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stderr.contains(&format!("failed to load {first}")), "{stderr}");
+        assert!(stderr.contains(&format!("failed to load {second}")), "{stderr}");
+        assert!(stderr.contains("2 of 2 threads failed"), "{stderr}");
+        assert!(!dir.path().join("downloads/wg/1").exists());
+        assert!(!dir.path().join("downloads/p/2").exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn it_fails_when_no_images_are_found() {
         let (code, stderr, left_dir) =
             run(ResponseTemplate::new(200).set_body_string("<html>no files here</html>")).await;
