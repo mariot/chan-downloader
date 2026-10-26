@@ -3,13 +3,22 @@
 //! `chan_downloader` is a collection of utilities to
 //! download images/videos from a 4chan thread
 
-use log::info;
-use reqwest::{Client, Error, Url};
+use log::{info, warn};
+use reqwest::{Client, Error, StatusCode, Url, header};
 use serde::Deserialize;
-use std::{
-    collections::HashSet,
-    fs::File,
-    io::{self, Cursor},
+use std::{collections::HashSet, time::Duration};
+use tokio::{fs, io::AsyncWriteExt};
+
+/// Attempts per request when it fails for a transient reason. With the waits
+/// between attempts, retries cover about a minute: the length of the longest
+/// stalls seen on 4chan's CDN
+const ATTEMPTS: u32 = 5;
+
+/// Wait before the first retry, doubled for each next one
+const RETRY_DELAY: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(1)
 };
 
 /// Represents a 4chan thread
@@ -25,15 +34,60 @@ pub struct Link {
     pub name: String,
 }
 
-/// Saves the image from the url to the given path.
-/// Returns the path on success
+/// Returns an HTTP client suited to the downloads: it identifies the
+/// downloader, and gives up on connections that stall so that the requests can
+/// be retried.
+///
+/// 4chan's CDN sometimes stops answering on an HTTP/2 connection for about a
+/// minute: pings detect it, and the connection is dropped instead of being
+/// reused by the retries.
+pub fn client() -> Result<Client, Error> {
+    Client::builder()
+        .user_agent(concat!("chan-downloader/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(10))
+        .http2_keep_alive_interval(Duration::from_secs(5))
+        .http2_keep_alive_timeout(Duration::from_secs(5))
+        .build()
+}
+
+/// Whether a request that failed with `err` is worth retrying
+fn is_transient(err: &Error) -> bool {
+    match err.status() {
+        Some(status) => status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+        None =>
+            err.is_timeout() || err.is_connect() || err.is_request() || err.is_body() || err.is_decode(),
+    }
+}
+
+/// Runs `request` until it succeeds, fails for a non transient reason, or
+/// [`ATTEMPTS`] attempts were made
+async fn with_retries<T, F, Fut>(url: &str, mut request: F) -> Result<T, Error>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, Error>>,
+{
+    let mut attempt = 1;
+    loop {
+        match request().await {
+            Err(err) if attempt < ATTEMPTS && is_transient(&err) => {
+                warn!("Attempt {attempt} for {url} failed, retrying: {err}");
+                tokio::time::sleep(RETRY_DELAY * 2_u32.pow(attempt - 1)).await;
+                attempt += 1;
+            },
+            result => return result,
+        }
+    }
+}
+
+/// Saves the image from the url to the given path, retrying on transient
+/// failures. Returns the path on success
 ///
 /// # Examples
 ///
 /// ```
-/// use reqwest::Client;
 /// use std::{env, fs::remove_file};
-/// let client = Client::builder().user_agent("reqwest").build().unwrap();
+/// let client = chan_downloader::client().unwrap();
 /// let workpath = env::current_dir().unwrap().join("1745612650141704.png");
 /// let url = "https://i.4cdn.org/g/1745612650141704.png";
 /// async {
@@ -46,19 +100,83 @@ pub struct Link {
 /// ```
 pub async fn save_image(url: &str, path: &str, client: &Client) -> Result<String, Error> {
     info!(target: "image_events", "Saving image to: {}", path);
-    let response = client.get(url).send().await?.error_for_status()?;
-    // Receive the whole file before creating it, so a failed transfer doesn't
-    // leave a truncated file that later runs would skip
-    let mut content = Cursor::new(response.bytes().await?);
-
-    let mut dest = File::create(path).unwrap();
-    io::copy(&mut content, &mut dest).unwrap();
+    with_retries(url, || download(url, path, client)).await?;
     info!("Saved image to: {}", path);
     Ok(String::from(path))
 }
 
-/// Returns the page content from the given url.
-/// Fails if the server answers with an error status (e.g. 403 or 404)
+/// Streams the file to `<path>.part`, renamed to `path` once complete, so a
+/// failed transfer never leaves a truncated file that later runs would skip
+async fn download(url: &str, path: &str, client: &Client) -> Result<(), Error> {
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    let part = format!("{path}.part");
+    let mut file = fs::File::create(&part).await.unwrap();
+    let mut transfer = async || {
+        while let Some(chunk) = response.chunk().await? {
+            file.write_all(&chunk).await.unwrap();
+        }
+        file.flush().await.unwrap();
+        Ok(())
+    };
+    match transfer().await {
+        Ok(()) => {
+            fs::rename(&part, path).await.unwrap();
+            Ok(())
+        },
+        Err(err) => {
+            let _ = fs::remove_file(&part).await;
+            Err(err)
+        },
+    }
+}
+
+/// Result of [`get_page_content_since`]
+#[derive(Debug, PartialEq, Eq)]
+pub enum Page {
+    /// The page changed: its content and `Last-Modified` header
+    Modified {
+        content:       String,
+        last_modified: Option<String>,
+    },
+    NotModified,
+}
+
+/// Returns the page content from the given url, unless it wasn't modified
+/// since `last_modified` (the `Last-Modified` header of a previous load).
+/// Retries on transient failures, and fails if the server answers with an
+/// error status (e.g. 403 or 404)
+pub async fn get_page_content_since(
+    url: &str,
+    client: &Client,
+    last_modified: Option<&str>,
+) -> Result<Page, Error> {
+    info!(target: "page_events", "Loading page: {}", url);
+    let page = with_retries(url, async || {
+        let mut request = client.get(url);
+        if let Some(since) = last_modified {
+            request = request.header(header::IF_MODIFIED_SINCE, since);
+        }
+        let response = request.send().await?.error_for_status()?;
+        if response.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Page::NotModified);
+        }
+        let last_modified = response
+            .headers()
+            .get(header::LAST_MODIFIED)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok(Page::Modified {
+            content: response.text().await?,
+            last_modified,
+        })
+    })
+    .await?;
+    info!("Loaded page: {}", url);
+    Ok(page)
+}
+
+/// Returns the page content from the given url, retrying on transient
+/// failures. Fails if the server answers with an error status (e.g. 403 or 404)
 ///
 /// # Examples
 ///
@@ -75,11 +193,10 @@ pub async fn save_image(url: &str, path: &str, client: &Client) -> Result<String
 /// };
 /// ```
 pub async fn get_page_content(url: &str, client: &Client) -> Result<String, Error> {
-    info!(target: "page_events", "Loading page: {}", url);
-    let response = client.get(url).send().await?.error_for_status()?;
-    let content = response.text().await?;
-    info!("Loaded page: {}", url);
-    Ok(content)
+    match get_page_content_since(url, client, None).await? {
+        Page::Modified { content, .. } => Ok(content),
+        Page::NotModified => unreachable!("not modified without If-Modified-Since"),
+    }
 }
 
 /// Returns the board name and thread id.
@@ -253,6 +370,7 @@ mod tests {
     use wiremock::{
         Mock,
         MockServer,
+        Request,
         ResponseTemplate,
         matchers::{method, path},
     };
@@ -513,6 +631,11 @@ mod tests {
         let answer = save_image(&url, dest, &Client::new()).await.unwrap();
         assert_eq!(answer, dest);
         assert_eq!(std::fs::read(dest).unwrap(), b"\x89PNG fake");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "temporary file left"
+        );
     }
 
     #[tokio::test]
@@ -560,6 +683,129 @@ mod tests {
                 .is_err()
         );
         assert!(!dest.exists());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "temporary file left"
+        );
+    }
+
+    #[tokio::test]
+    async fn it_retries_transient_failures() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"image".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("1.png");
+        let url = format!("{}/wg/1.png", server.uri());
+        save_image(&url, dest.to_str().unwrap(), &Client::new())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"image");
+    }
+
+    #[tokio::test]
+    async fn it_retries_stalled_responses() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("thread"))
+            .mount(&server)
+            .await;
+
+        let client = Client::builder()
+            .read_timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let url = format!("{}/wg/thread/1", server.uri());
+        assert_eq!(get_page_content(&url, &client).await.unwrap(), "thread");
+    }
+
+    #[tokio::test]
+    async fn it_gives_up_after_all_attempts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(u64::from(ATTEMPTS))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/wg/thread/1", server.uri());
+        let err = get_page_content(&url, &Client::new()).await.unwrap_err();
+        assert_eq!(err.status(), Some(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
+    #[tokio::test]
+    async fn it_does_not_retry_client_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/wg/thread/1", server.uri());
+        assert!(get_page_content(&url, &Client::new()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn it_loads_page_only_if_modified() {
+        const DATE: &str = "Mon, 26 Oct 2026 12:00:00 GMT";
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            // `header()` would split the date on its comma
+            .and(|request: &Request| {
+                request
+                    .headers
+                    .get("If-Modified-Since")
+                    .is_some_and(|value| value == DATE)
+            })
+            .respond_with(ResponseTemplate::new(304))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Last-Modified", DATE)
+                    .set_body_string("thread"),
+            )
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/wg/thread/1.json", server.uri());
+        let client = Client::new();
+        assert_eq!(
+            get_page_content_since(&url, &client, None).await.unwrap(),
+            Page::Modified {
+                content:       String::from("thread"),
+                last_modified: Some(String::from(DATE)),
+            }
+        );
+        assert_eq!(
+            get_page_content_since(&url, &client, Some(DATE)).await.unwrap(),
+            Page::NotModified
+        );
+    }
+
+    #[test]
+    fn it_builds_the_client() {
+        assert!(client().is_ok());
     }
 
     // Tests against the live sites. Run with `cargo test -- --ignored`

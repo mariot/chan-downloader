@@ -7,26 +7,24 @@
 
 use futures::stream::StreamExt;
 use std::{
+    collections::HashSet,
     env,
     fs::{create_dir_all, remove_dir},
     io::Write,
-    path::{Path, PathBuf},
-    sync::{
-        LazyLock,
-        Mutex,
-        Once,
-        atomic::{AtomicUsize, Ordering},
-    },
-    thread,
+    path::PathBuf,
+    sync::Once,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Error, Result, anyhow, bail};
 use chan_downloader::{
+    Link,
+    Page,
+    client,
     get_api_image_links,
     get_api_url,
     get_image_links,
-    get_page_content,
+    get_page_content_since,
     get_thread_info,
     save_image,
 };
@@ -46,15 +44,25 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::{LevelFilter, error, info};
 use reqwest::Client;
 
-static DOWNLOADED_FILES: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-
 /// Run `initialize_logging` one time
 ///
 /// The place where this is used should only be ran once,
 /// but this is a precaution
 static ONCE: Once = Once::new();
 
-fn main() -> Result<()> {
+/// Minimum time between two thread requests (4chan API rules)
+const REQUEST_INTERVAL: Duration = Duration::from_secs(1);
+
+/// A thread being downloaded
+struct ThreadJob {
+    link:          String,
+    directory:     PathBuf,
+    /// `Last-Modified` header of the last load, to only reload if it changed
+    last_modified: Option<String>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
     let matches = build_app().get_matches();
     let verbosity = matches.get_one::<u8>("verbose").expect("Count always defaulted");
 
@@ -70,16 +78,24 @@ fn main() -> Result<()> {
     let reload = matches.get_flag("reload");
     let interval = matches.get_one::<u64>("interval").unwrap_or(&5_u64);
     let limit = matches.get_one::<u64>("limit").unwrap_or(&120_u64);
-    let concurrent = matches.get_one::<usize>("concurrent").unwrap_or(&2_usize);
+    let concurrent = matches.get_one::<usize>("concurrent").unwrap_or(&8_usize);
 
     info!("Downloading images from {:?} to {}", threads, output);
 
-    let mut active = threads
+    let mut jobs = threads
         .iter()
-        .map(|thread| Ok((thread.as_str(), create_directory(thread, &output)?)))
-        .collect::<Result<Vec<(&str, PathBuf)>>>()?;
-    let total = active.len();
+        .map(|thread| {
+            Ok(ThreadJob {
+                link:          thread.to_string(),
+                directory:     create_directory(thread, &output)?,
+                last_modified: None,
+            })
+        })
+        .collect::<Result<Vec<ThreadJob>>>()?;
+    let total = jobs.len();
     let mut errors: Vec<Error> = Vec::new();
+    let client = client()?;
+    let mut downloaded = HashSet::new();
 
     let start = Instant::now();
     let wait_time = Duration::from_secs(60 * interval);
@@ -90,31 +106,26 @@ fn main() -> Result<()> {
     };
     loop {
         let load_start = Instant::now();
+        let failed = download_threads(&client, &mut jobs, &mut downloaded, *concurrent).await?;
         // A failed thread doesn't stop the others, and isn't reloaded
-        active.retain(
-            |(thread, directory)| match explore_thread(thread, directory, *concurrent) {
-                Ok(()) => true,
-                Err(err) => {
-                    // Don't leave an empty directory behind (fails if it has
-                    // files)
-                    let _ = remove_dir(directory);
-                    if total > 1 {
-                        eprintln!("Error: {err:#}");
-                    }
-                    errors.push(err);
-                    false
-                },
-            },
-        );
+        for (index, err) in failed.into_iter().rev() {
+            let job = jobs.remove(index);
+            // Don't leave an empty directory behind (fails if it has files)
+            let _ = remove_dir(&job.directory);
+            if total > 1 {
+                eprintln!("Error: {err:#}");
+            }
+            errors.push(err);
+        }
         let runtime = start.elapsed();
         let load_runtime = load_start.elapsed();
-        if active.is_empty() || runtime > limit_time {
+        if jobs.is_empty() || runtime > limit_time {
             info!("Runtime exceeded, exiting.");
             break;
         };
         if let Some(remaining) = wait_time.checked_sub(load_runtime) {
             info!("Schedule slice has time left over; sleeping for {:?}", remaining);
-            thread::sleep(remaining);
+            tokio::time::sleep(remaining).await;
         }
         info!("Downloader executed one more time for {:?}", load_runtime);
     }
@@ -161,129 +172,154 @@ fn initialize_logging(verbosity: u8) {
     });
 }
 
-fn mark_as_downloaded(file: &str) -> Result<&str, &str> {
-    let mut db = DOWNLOADED_FILES
-        .lock()
-        .map_err(|_| "Failed to acquire MutexGuard")?;
-    db.push(file.to_string());
-
-    Ok(file)
-}
-
-#[tokio::main]
-async fn explore_thread(thread_link: &str, directory: &Path, concurrent: usize) -> Result<(), Error> {
+/// Downloads the new files of all threads through one shared queue of
+/// `concurrent` downloads. `downloaded` holds the files already saved, to skip
+/// them on reloads. Returns the errors of the threads that failed, by index in
+/// `jobs`.
+async fn download_threads(
+    client: &Client,
+    jobs: &mut [ThreadJob],
+    downloaded: &mut HashSet<PathBuf>,
+    concurrent: usize,
+) -> Result<Vec<(usize, Error)>> {
     let start = Instant::now();
-    let client = Client::builder()
-        .user_agent(concat!("chan-downloader/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    let mut errors = Vec::new();
+    let mut links_per_thread = vec![0; jobs.len()];
+    let mut queue = Vec::new();
 
-    match get_links(thread_link, &client).await {
-        Ok(links_vec) => {
-            info!("Loaded content from {}", thread_link);
-
-            let total = links_vec.len();
-            let failed = AtomicUsize::new(0);
-            let pb = ProgressBar::new(total as u64);
-
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template(
-                        "{spinner:.green.bold} [{elapsed_precise}] [{bar:40.cyan.bold/blue}] \
-                         {pos}/{len} {msg} ({eta})",
-                    )
-                    .context("failed to build progress bar")?
-                    .progress_chars("#>-"),
-            );
-            pb.set_message(thread_link.to_owned());
-            pb.tick();
-
-            let fetches = futures::stream::iter(links_vec.into_iter().map(|link| {
-                let client = &client;
-                let pb = &pb;
-                let failed = &failed;
-                async move {
-                    let img_path = directory.join(link.name);
-                    let image_path = img_path.to_str().unwrap();
-                    let has_been_downloaded = async {
-                        let db = DOWNLOADED_FILES
-                            .lock()
-                            .map_err(|_| String::from("Failed to acquire MutexGuard"))
-                            .unwrap();
-                        db.contains(&String::from(image_path))
-                    }
-                    .await;
-
-                    if has_been_downloaded {
-                        info!("Image {} previously downloaded. Skipped", img_path.display());
-                    } else if !img_path.exists() {
-                        match save_image(format!("https:{}", link.url).as_str(), image_path, client).await
-                        {
-                            Ok(path) => {
-                                info!("Saved image to {}", path);
-                                let result = mark_as_downloaded(&path).unwrap();
-                                info!("{} added to downloaded files", result);
-                            },
-                            Err(err) => {
-                                failed.fetch_add(1, Ordering::Relaxed);
-                                error!("Couldn't save image {}", image_path);
-                                eprintln!("Error: {}", err);
-                            },
-                        }
+    for (index, job) in jobs.iter_mut().enumerate() {
+        if index > 0 {
+            tokio::time::sleep(REQUEST_INTERVAL).await;
+        }
+        match get_links(&job.link, client, job.last_modified.as_deref()).await {
+            Ok(None) => info!("{} not modified since last load", job.link),
+            Ok(Some((links, last_modified))) => {
+                info!("Loaded content from {}", job.link);
+                job.last_modified = last_modified;
+                links_per_thread[index] = links.len();
+                for link in links {
+                    let path = job.directory.join(&link.name);
+                    if downloaded.contains(&path) {
+                        info!("Image {} previously downloaded. Skipped", path.display());
+                    } else if path.exists() {
+                        info!("Image {} already exists. Skipped", path.display());
+                        downloaded.insert(path);
                     } else {
-                        info!("Image {} already exists. Skipped", img_path.display());
-                        let result = mark_as_downloaded(image_path).unwrap();
-                        info!("{} added to downloaded files", result);
+                        queue.push((index, format!("https:{}", link.url), path));
                     }
-                    pb.inc(1);
                 }
-            }))
-            .buffer_unordered(concurrent)
-            .collect::<Vec<()>>();
-            fetches.await;
-
-            pb.finish_with_message(format!("{thread_link} done"));
-            info!("Done in {:?}", start.elapsed());
-
-            let failed = failed.into_inner();
-            if failed == total {
-                bail!(
-                    "could not download any of the {total} files of {thread_link}: the site may be \
-                     blocking the downloader (e.g. a Cloudflare check)"
-                );
-            }
-            if failed > 0 {
-                eprintln!("Warning: {failed} of {total} files could not be downloaded");
-            }
-        },
-        Err(e) => {
-            error!("Failed to get content from {}", thread_link);
-            return Err(e);
-        },
+            },
+            Err(err) => {
+                error!("Failed to get content from {}", job.link);
+                errors.push((index, err));
+            },
+        }
     }
 
-    Ok(())
+    let pb = ProgressBar::new(queue.len() as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{spinner:.green.bold} [{elapsed_precise}] [{bar:40.cyan.bold/blue}] {pos}/{len} {msg} \
+                 ({eta})",
+            )
+            .context("failed to build progress bar")?
+            .progress_chars("#>-"),
+    );
+    let label = match jobs {
+        [job] => job.link.clone(),
+        _ => format!("{} threads", jobs.len()),
+    };
+    pb.set_message(label.clone());
+    pb.tick();
+
+    let results: Vec<(usize, PathBuf, bool)> = futures::stream::iter(queue)
+        .map(|(index, url, path)| {
+            let pb = &pb;
+            async move {
+                let saved = match save_image(&url, path.to_str().unwrap(), client).await {
+                    Ok(saved) => {
+                        info!("Saved image to {}", saved);
+                        true
+                    },
+                    Err(err) => {
+                        error!("Couldn't save image {}", path.display());
+                        pb.suspend(|| eprintln!("Error: {err}"));
+                        false
+                    },
+                };
+                pb.inc(1);
+                (index, path, saved)
+            }
+        })
+        .buffer_unordered(concurrent)
+        .collect()
+        .await;
+
+    pb.finish_with_message(format!("{label} done"));
+    info!("Done in {:?}", start.elapsed());
+
+    let mut failed_per_thread = vec![0; jobs.len()];
+    for (index, path, saved) in results {
+        if saved {
+            downloaded.insert(path);
+        } else {
+            failed_per_thread[index] += 1;
+        }
+    }
+    for (index, job) in jobs.iter().enumerate() {
+        let (failed, total) = (failed_per_thread[index], links_per_thread[index]);
+        if failed > 0 && failed == total {
+            errors.push((
+                index,
+                anyhow!(
+                    "could not download any of the {total} files of {}: the site may be blocking the \
+                     downloader (e.g. a Cloudflare check)",
+                    job.link
+                ),
+            ));
+        } else if failed > 0 {
+            eprintln!(
+                "Warning: {failed} of {total} files of {} could not be downloaded",
+                job.link
+            );
+        }
+    }
+    errors.sort_by_key(|(index, _)| *index);
+    Ok(errors)
 }
 
-/// Returns the image links of a thread: from the API for 4chan, from the page
-/// for other sites. Fails if there are none, so that a blocked or changed page
-/// is not silently treated as an empty thread.
-async fn get_links(thread_link: &str, client: &Client) -> Result<Vec<chan_downloader::Link>> {
-    let links = if let Some(api_url) = get_api_url(thread_link) {
+/// Returns the image links of a thread and its `Last-Modified` header: from the
+/// API for 4chan, from the page for other sites. Returns `None` if it wasn't
+/// modified since `last_modified`. Fails if there are no links, so that a
+/// blocked or changed page is not silently treated as an empty thread.
+async fn get_links(
+    thread_link: &str,
+    client: &Client,
+    last_modified: Option<&str>,
+) -> Result<Option<(Vec<Link>, Option<String>)>> {
+    let api_url = get_api_url(thread_link);
+    let url = api_url.as_deref().unwrap_or(thread_link);
+    let (content, last_modified) = match get_page_content_since(url, client, last_modified)
+        .await
+        .with_context(|| match &api_url {
+            Some(api_url) => format!("failed to load thread {thread_link} from {api_url}"),
+            None => format!("failed to load {thread_link}"),
+        })? {
+        Page::NotModified => return Ok(None),
+        Page::Modified { content, last_modified } => (content, last_modified),
+    };
+
+    let links = if let Some(api_url) = &api_url {
         let board = get_thread_info(thread_link).board;
-        let json = get_page_content(&api_url, client)
-            .await
-            .with_context(|| format!("failed to load thread {thread_link} from {api_url}"))?;
-        let links = get_api_image_links(&json, &board)
+        let links = get_api_image_links(&content, &board)
             .with_context(|| format!("unexpected response from {api_url}"))?;
         if links.is_empty() {
             bail!("no images found in {thread_link}");
         }
         links
     } else {
-        let page = get_page_content(thread_link, client)
-            .await
-            .with_context(|| format!("failed to load {thread_link}"))?;
-        let links = get_image_links(&page);
+        let links = get_image_links(&content);
         if links.is_empty() {
             bail!(
                 "no images found in {thread_link}: the site may be blocking the downloader (e.g. a \
@@ -292,7 +328,7 @@ async fn get_links(thread_link: &str, client: &Client) -> Result<Vec<chan_downlo
         }
         links
     };
-    Ok(links)
+    Ok(Some((links, last_modified)))
 }
 
 fn create_directory(thread_link: &str, output: &str) -> Result<PathBuf> {
@@ -393,7 +429,7 @@ fn build_app() -> Command {
                 .long("concurrent")
                 .value_name("NUM-REQUESTS")
                 .value_parser(value_parser!(usize))
-                .help("Number of concurrent requests (Default is 2)"),
+                .help("Number of concurrent downloads (Default is 8)"),
         )
         .arg(
             Arg::new("verbose")
@@ -516,12 +552,5 @@ mod tests {
             create_directory(THREAD, output.to_str().unwrap()).unwrap(),
             created
         );
-    }
-
-    #[test]
-    fn it_tracks_downloaded_files() {
-        let file = "/tmp/chan-downloader-test/1.png";
-        assert_eq!(mark_as_downloaded(file).unwrap(), file);
-        assert!(DOWNLOADED_FILES.lock().unwrap().contains(&file.to_string()));
     }
 }

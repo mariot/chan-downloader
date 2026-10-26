@@ -6,9 +6,9 @@ CLI to download all images and videos (jpg, png, gif, webm, mp4, pdf) of a 4chan
 
 If you use the reload flag, previously saved image won't be redownloaded.
 
-Best results obtained while using the option `-c 4` (4 concurrent downloads).
+Files are downloaded 8 at a time by default (`-c` to change it): more doesn't make it faster. Downloads that stall are retried, and with `--reload` a thread is only fetched again when it changed.
 
-Several threads can be downloaded at once, each to its own directory:
+Several threads can be downloaded at once, each to its own directory, sharing the same downloads:
 
 ```bash
 chan-downloader -t https://boards.4chan.org/wg/thread/6872254 https://boards.4chan.org/p/thread/4535213
@@ -23,7 +23,7 @@ Options:
   -r, --reload                     Reload thread every t minutes to get new images
   -i, --interval <INTERVAL>        Time between each reload (in minutes. Default is 5)
   -l, --limit <LIMIT>              Time limit for execution (in minutes. Default is 120)
-  -c, --concurrent <NUM-REQUESTS>  Number of concurrent requests (Default is 2)
+  -c, --concurrent <NUM-REQUESTS>  Number of concurrent downloads (Default is 8)
   -h, --help                       Print help
   -V, --version                    Print version
 ```
